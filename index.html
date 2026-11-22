@@ -1002,12 +1002,18 @@ const MODE_OF = { masked: 'stereo', rover: 'stereo', rover3d: 'stereo', terrain3
 const MODE_KEYS = { full: ['scape3d', 'terrain3d'], drive: ['drive3d'] };
 const MODE_FALLBACK = { drive: 'full', full: 'stereo' };   // where a station lacks the mode
 let mode = 'stereo';
+// 1.0.1 (Christian, 21 Nov 2026: "Make full 3D default"): the terrain mode asked for - full 3D until the visitor
+// chooses another (the menu, V, B, a link).  A station opens in it where it has it (pick falls back to the local 3D,
+// then stereo); the welcome view, a panorama, does not change it
+let want = 'full';
 const modeKeys = m => m === 'stereo' ? (roverOn ? ['rover', 'rover3d'] : ['masked']) : MODE_KEYS[m] || [];
 function modesOf(p) {                            // the terrain modes this station has
   const ks = variants(p).map(q => q.key);
   return TERRAIN_MODES.filter(([m]) => m === 'stereo' ? ks.some(k => MODE_OF[k] === 'stereo') : MODE_KEYS[m].some(k => ks.includes(k)));
 }
 const viewName = () => views(panos[cur.s] || {}, cur.v)[cur.w];
+// 1.0.1: the view a change of station keeps - not the welcome view's (it opens in the original color; a station in standard)
+const leaveName = () => (panos[cur.s] || {}).welcome ? 'standard' : viewName();
 function pick(p, m, wname) {                     // cur.v and cur.w for terrain mode m and roverOn; the view kept by its name
   const vs = variants(p);
   let j = -1;
@@ -1187,10 +1193,11 @@ function step(what, d) {
     for (let i = 1; i <= names.length; i++) { const j = (cur.w + i) % names.length; if (color(names[j])) { cur.w = j; break; } }
     show(); return;
   }
-  if (what === 's') { const wn = viewName(); cur.s = (cur.s + d + panos.length) % panos.length; pick(panos[cur.s], mode, wn); }   // 0.99.40: the terrain mode and the rover kept
+  if (what === 's') { const wn = leaveName(); cur.s = (cur.s + d + panos.length) % panos.length; pick(panos[cur.s], mode === 'drive' ? 'drive' : want, wn); }   // 0.99.40: the terrain mode and the rover kept
   if (what === 'v') {                                            // 0.99.40: the next terrain mode (V; headset: right grip)
     const ms = modesOf(p).map(x => x[0]), i = ms.indexOf(mode === 'drive' ? 'full' : mode);
-    pick(p, ms[(i + d + ms.length) % Math.max(ms.length, 1)] || 'stereo', viewName());
+    want = ms[(i + d + ms.length) % Math.max(ms.length, 1)] || 'stereo';
+    pick(p, want, viewName());
   }
   if (what === 'w') cur.w = (cur.w + d + views(p, cur.v).length) % Math.max(views(p, cur.v).length, 1);
   show();
@@ -1225,6 +1232,7 @@ function stereoOrFull() {                        // 1.0 (Christian, 20 Nov 2026:
   const p = panos[cur.s] || {};                  // between the stereo and full 3d models. Every time it switches, go to
   const ms = modesOf(p).map(x => x[0]);          // the standard color"): headset B and the B key
   const to = mode === 'stereo' ? (ms.includes('full') ? 'full' : 'stereo') : 'stereo';
+  want = to;
   pick(p, to, 'standard');
   show();
 }
@@ -1267,7 +1275,7 @@ $('nextSt').onclick = () => step('s', 1);
 $('roverBtn').onclick = roverToggle;
 $('driveBtn').onclick = driveToggle;
 
-function fromHash() {
+function fromHash(first) {
   const [sid, vkey, wkey, rk] = decodeURIComponent(location.hash.slice(1)).split('/');
   let s = panos.findIndex(p => p.id === sid);
   if (s < 0 && sid) {                                              // 1.0: a link of 0.99 (Sol0052_S003D2046) to Sol0052
@@ -1277,17 +1285,18 @@ function fromHash() {
   if (s < 0) return;
   cur.s = s;
   const v = variants(panos[s]).findIndex(q => q.key === vkey);
-  cur.v = v < 0 ? 0 : v;
+  if (v < 0) pick(panos[s], want, wkey); else cur.v = v;          // 1.0.1: a link without a terrain mode opens in `want`
   const key = (variants(panos[s])[cur.v] || {}).key;              // 0.99.40: the terrain mode and the rover of the link
   mode = MODE_OF[key] || 'stereo';
+  if (first && v >= 0 && MODE_OF[key] && mode !== 'drive') want = mode;   // the mode a link names, when the page opens
   roverOn = mode === 'stereo' ? key !== 'masked' : rk !== 'no-rover';
   const w = views(panos[s], cur.v).findIndex(k => k === wkey || viewLabel(k) === wkey);
   cur.w = w < 0 ? 0 : w;
 }
 
 const blurAfter = e => { if (e && e.target && e.target.blur) e.target.blur(); };   // 0.99.37: the keys back to the page
-$('station').onchange = e => { cur.s = +e.target.value; show(); blurAfter(e); };
-$('variant').onchange = e => { pick(panos[cur.s] || {}, e.target.value, viewName()); show(); blurAfter(e); };   // 0.99.40: a terrain mode
+$('station').onchange = e => { const wn = leaveName(); cur.s = +e.target.value; pick(panos[cur.s] || {}, want, wn); show(); blurAfter(e); };
+$('variant').onchange = e => { want = e.target.value; pick(panos[cur.s] || {}, want, viewName()); show(); blurAfter(e); };   // 0.99.40: a terrain mode
 $('view').onchange = e => { cur.w = +e.target.value; show(); blurAfter(e); };
 $('eye').onchange = e => { setEye(e.target.value); blurAfter(e); };
 window.addEventListener('hashchange', () => { fromHash(); show(); });
@@ -1636,7 +1645,7 @@ diagnostics();
     if (j.title && !/stereo panoramas|panorama viewer|photogrammetry viewer/i.test(j.title)) { $('title').textContent = j.title; document.title = j.title; }
   } catch (e) { msg(`no image list at ${index.href} (${e.message || e})`); return; }
   if (!panos.length) { msg('the image list is empty'); return; }
-  fromHash();
+  fromHash(true);
   look();
   show();
 })();
