@@ -108,6 +108,12 @@ if (location.hostname === 'ctate7163.github.io' && (/^\/(RPP|MPPP)\/ods(\/|$)/i.
                font-weight: 700; color: #fc6; background: #222c; border: 1px solid #f90; border-radius: 4px; padding: 1px 5px; }
   /* 1.0.1: a phone's fingers - larger targets for the buttons (the device class: body data-device) */
   body[data-device="phone"] #nav button, body[data-device="phone"] #compass button, body[data-device="phone"] #home { min-width: 44px; min-height: 44px; }
+  /* 1.0.6, 22 Nov (Christian: "some text overlaps on the smartphone view"): on a narrow screen the station line (#foot)
+     and the triangle count (#diag) met in the strip left of the buttons, under the VR button - on a phone the count is
+     left out and the station line sits above the VR button, its words wrapped within the strip */
+  body[data-device="phone"] #diag { display: none; }
+  body[data-device="phone"] #foot { bottom: 72px; right: 12px; max-width: calc(100% - 200px); }
+  body[data-device="phone"] #credit { bottom: 150px; }
   #msg { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center; pointer-events: none; z-index: 1;
          font-size: 16px; text-shadow: 0 0 6px #000; }
 </style>
@@ -694,6 +700,14 @@ async function loadSurface(rs, opt) {                            // -> {made: [m
           t.flipY = false; t.wrapS = THREE.RepeatWrapping; t.generateMipmaps = true;
           t.colorSpace = rs.triangles != null ? THREE.NoColorSpace : THREE.SRGBColorSpace;
           t.minFilter = THREE.LinearMipmapLinearFilter; t.anisotropy = Math.min(8, renderer.capabilities.getMaxAnisotropy());
+          // (Christian, 22 Nov 2026: "On smartphone, the rover is partially pixelated"): the rover's texture is
+          // an atlas of small separate pieces (one per seen triangle, a single texel for the unseen ones), so where two
+          // neighboring triangles take their colors from far-apart pieces the GPU picks a coarse mipmap level - an
+          // average of unrelated pieces - and the rover shows a speckle along every triangle edge (worst on a phone).
+          // Its texture is now read at full resolution only: no mipmaps.
+          if (rs.triangles != null && me.name === 'rover') {
+            t.generateMipmaps = false; t.minFilter = THREE.LinearFilter; t.anisotropy = 1;
+          }
           t.needsUpdate = true;
           shared.set(key, t); textures = [t];
         }
@@ -1417,7 +1431,8 @@ document.documentElement.addEventListener('mouseleave', () => hover.set(0, 0));
 // moves it TILT_M along the screen's right or up; how it is held is followed slowly (TILT_RECENTER_S), so a new grip
 // becomes the middle again.  ?tilt=-1 turns the direction round, ?tilt=0 (or ?still=1, or P) turns it off.  iOS asks
 // for leave to read the tilt at the first touch.
-const TILT_M = 0.08, TILT_FULL_DEG = 15, TILT_RECENTER_S = 6;
+// 1.0.6, 22 Nov (Christian: "please double the pivot motion from tilting the phone"): TILT_M 0.08 -> 0.16 m
+const TILT_M = 0.16, TILT_FULL_DEG = 15, TILT_RECENTER_S = 6;
 const tiltSign = (() => { const v = new URLSearchParams(location.search).get('tilt'); return v == null ? 1 : Number(v) || 0; })();
 let eyeReach = HOVER_M;
 const tilt = { base: null, t: 0, on: false };
