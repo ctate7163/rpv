@@ -102,6 +102,8 @@ if (location.hostname === 'ctate7163.github.io' && (/^\/(RPP|MPPP)\/ods(\/|$)/i.
      feature") */
   #driveBeta { position: absolute; right: calc(100% + 6px); bottom: calc(100% + 18px); display: none; font-size: 11px;
                font-weight: 700; color: #fc6; background: #222c; border: 1px solid #f90; border-radius: 4px; padding: 1px 5px; }
+  /* 1.0.1: a phone's fingers - larger targets for the buttons (the device class: body data-device) */
+  body[data-device="phone"] #nav button, body[data-device="phone"] #compass button, body[data-device="phone"] #home { min-width: 44px; min-height: 44px; }
   #msg { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center; pointer-events: none; z-index: 1;
          font-size: 16px; text-shadow: 0 0 6px #000; }
 </style>
@@ -139,6 +141,25 @@ import { VRButton } from './vendor/VRButton.js';
 const $ = id => document.getElementById(id);
 const msg = t => { $('msg').textContent = t || ''; };
 
+// ---------------------------------------------------------------- the kind of device (1.0.1)
+// 1.0.1 (Christian, 21 Nov 2026: "The browser should detect the PC, smartphone or headset and adapt features and welcome
+// instructions accordingly"): 'headset' (a headset's own browser: Quest, Pico, Wolvic, Vision Pro), 'phone' (a touch
+// screen without a mouse: phones and tablets) or 'pc' (a mouse and keys).  ?device=pc|phone|headset overrides it.
+// The welcome view shows that device's controls; a phone gets tilt, pinch zoom and touch driving; a headset the large
+// VR button and the controller list before it enters VR.
+const DEVICE = (() => {
+  const q = new URLSearchParams(location.search).get('device');
+  if (q === 'pc' || q === 'phone' || q === 'headset') return q;
+  const ua = navigator.userAgent || '';
+  if (/OculusBrowser|Quest|Pico|Wolvic|VisionOS|SamsungBrowser VR|Mobile VR/i.test(ua)) return 'headset';
+  const mm = x => !!(window.matchMedia && window.matchMedia(x).matches);
+  const touchOnly = mm('(pointer: coarse)') && !mm('(any-pointer: fine)');
+  const iPadOS = /Macintosh/.test(ua) && navigator.maxTouchPoints > 1;     // iPadOS reports itself as a Mac
+  if (touchOnly || iPadOS || /Android|iPhone|iPad|iPod|Mobile/i.test(ua)) return 'phone';
+  return 'pc';
+})();
+document.body.dataset.device = DEVICE;
+
 // ---------------------------------------------------------------- scene: one sphere per eye, the viewer at its center
 const renderer = new THREE.WebGLRenderer({ antialias: true });   // 0.98.14: the rover model's edges (false until then)
 renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
@@ -150,7 +171,8 @@ const vrButton = VRButton.createButton(renderer);
 document.body.appendChild(vrButton);
 // 0.98.28 (Christian, 16 Nov 2026: "make the Enter VR button a little larger if supported")
 if (navigator.xr && navigator.xr.isSessionSupported)
-  navigator.xr.isSessionSupported('immersive-vr').then(ok => { if (ok) vrButton.classList.add('rpv-big'); }).catch(() => {});
+  navigator.xr.isSessionSupported('immersive-vr').then(ok => { if (ok && DEVICE !== 'phone') vrButton.classList.add('rpv-big'); }).catch(() => {});
+// 1.0.1: a phone's browser may offer immersive-vr (a phone viewer) - the button stays, at its own size
 
 const scene = new THREE.Scene();
 const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 6000);   // 0.99.32: the fifth mode's sky is 3 km off
@@ -725,7 +747,7 @@ const VIEWER_NAME = 'Rover Photogrammetry Viewer (RPV)';
 // 0.99.36 (Christian, 19 Nov 2026: "please put the rpp-rpv viewer version number on the lower left above the site name,
 // images size, and version on which the site was rendered"): the page's own version (the RPP release that wrote it;
 // tests/test_station_mesh.py keeps it equal to rpp.__version__), above the station's line
-const RPV_VERSION = '1.0.0rc1';
+const RPV_VERSION = '1.0.1.dev0';
 $('ver').textContent = `RPV viewer ${RPV_VERSION}`;
 const CREDIT = 'Created by Christian Tate at MSSS';   // 0.99.14 (Christian, 17 Nov 2026: 'remove the "for research purposes" phrase')
 // 0.99.39 (Christian, 19 Nov 2026: "remove the code: ... text from the welcome screen"): the credit alone, no link to
@@ -740,6 +762,7 @@ welcome.visible = false;
 world.add(welcome);
 let welcomeBuilt = false;
 let ctlHeadset = null, ctlScreen = null;     // 0.99.37: the welcome view's two sets of controls
+let ctlPhone = null, ctlHeadsetOut = null;  // 1.0.1: a phone's, and a headset's browser before VR
 // 0.99.40 (Christian, 19 Nov 2026: "the North, West, etc. letters in the sky should be 75% their current size and have a
 // solid orange outline and come down a little. put a little more space between the letters so that they don't overlap.
 // Those should also become visible in info mode when I or X or pushed"): 10.5 m wide at 40 m (14 before), 24 deg up
@@ -779,7 +802,18 @@ function showWelcome(on) {
                                  { text: 'I: info and map   |   H: home   |   B: stereo / full 3D   |   P: motion on / off', px: 84, weight: 600 },
                                  { text: 'steering wheel button: drive the rover (beta)   |   driving: the arrow keys', px: 84, weight: 600 }],
                                 { back: 'rgba(0,0,0,0.35)', uniform: true }), WELCOME_AZ_DEG, -6, 5, 3.6);
-    welcome.add(ctlHeadset, ctlScreen);
+    // 1.0.1: a phone's controls (touch and tilt), and a headset's browser before it enters VR (the VR button first)
+    ctlPhone = place(textPanel([{ text: 'swipe: look   |   pinch: zoom   |   tilt the phone: move the eye', px: 84, weight: 600 },
+                                { text: '\u2039 \u203a buttons: site   |   rover button: rover on / off   |   N E S W O: face', px: 84, weight: 600 },
+                                { text: 'the lists at the top: station, color map, stereo / full 3D', px: 84, weight: 600 },
+                                { text: 'steering wheel button: drive (beta)   |   driving: drag up / down, left / right', px: 84, weight: 600 }],
+                               { back: 'rgba(0,0,0,0.35)', uniform: true }), WELCOME_AZ_DEG, -6, 5, 3.6);
+    ctlHeadsetOut = place(textPanel([{ text: 'press the VR button at the bottom to step into the station', px: 84, weight: 700, color: MARK_BLUE },
+                                     { text: 'in VR: trigger: next site   |   left trigger: back   |   stick: turn', px: 84, weight: 600 },
+                                     { text: 'X: info and map   |   Y: home   |   A: view   |   B: stereo / 3D', px: 84, weight: 600 },
+                                     { text: 'grip: rover on / off   |   stick click: drive (beta)   |   hold Y: leave VR', px: 84, weight: 600 }],
+                                    { back: 'rgba(0,0,0,0.35)', uniform: true }), WELCOME_AZ_DEG, -6, 5, 3.6);
+    welcome.add(ctlHeadset, ctlScreen, ctlPhone, ctlHeadsetOut);
   }
   welcome.visible = !!on;
   updateSkyWords();
@@ -787,9 +821,11 @@ function showWelcome(on) {
   $('credit').style.display = on ? '' : 'none';
 }
 function controlsFor() {                          // 0.99.37: the welcome view's controls - the headset's in a session
-  const xr = renderer.xr.isPresenting;
+  const xr = renderer.xr.isPresenting;                           // 1.0.1: on a screen, the device's own set
   if (ctlHeadset) ctlHeadset.visible = xr;
-  if (ctlScreen) ctlScreen.visible = !xr;
+  if (ctlScreen) ctlScreen.visible = !xr && DEVICE === 'pc';
+  if (ctlPhone) ctlPhone.visible = !xr && DEVICE === 'phone';
+  if (ctlHeadsetOut) ctlHeadsetOut.visible = !xr && DEVICE === 'headset';
 }
 renderer.xr.addEventListener('sessionstart', controlsFor);
 renderer.xr.addEventListener('sessionend', controlsFor);
@@ -1302,13 +1338,50 @@ window.addEventListener('pointermove', e => {
   if (e.buttons || Math.abs(e.movementX) + Math.abs(e.movementY) > 2) touched();
 }, { passive: true });
 document.documentElement.addEventListener('mouseleave', () => hover.set(0, 0));
+// 1.0.1 (Christian, 21 Nov 2026: "Rpv smartphone viewer should use the phone tilt to change the pivot"): on a phone the
+// tilt moves the eye about the pivot, as the mouse does on a PC - TILT_FULL_DEG of tilt from how the phone is held
+// moves it TILT_M along the screen's right or up; how it is held is followed slowly (TILT_RECENTER_S), so a new grip
+// becomes the middle again.  ?tilt=-1 turns the direction round, ?tilt=0 (or ?still=1, or P) turns it off.  iOS asks
+// for leave to read the tilt at the first touch.
+const TILT_M = 0.08, TILT_FULL_DEG = 15, TILT_RECENTER_S = 6;
+const tiltSign = (() => { const v = new URLSearchParams(location.search).get('tilt'); return v == null ? 1 : Number(v) || 0; })();
+let eyeReach = HOVER_M;
+const tilt = { base: null, t: 0, on: false };
+function onTilt(e) {
+  if (e.beta == null || e.gamma == null || !tiltSign) return;
+  const ang = ((screen.orientation && screen.orientation.angle) ?? window.orientation ?? 0) % 360;
+  // the tilt about the screen's up axis (x: the eye right) and about its right axis (y: the eye up), by the screen's turn
+  let x = e.gamma, y = -e.beta;
+  if (ang === 90) { x = e.beta; y = e.gamma; }
+  else if (ang === 270 || ang === -90) { x = -e.beta; y = -e.gamma; }
+  else if (ang === 180 || ang === -180) { x = -e.gamma; y = e.beta; }
+  const now = performance.now() / 1000;
+  if (!tilt.base) tilt.base = { x, y };
+  const k = 1 - Math.exp(-Math.min(1, now - tilt.t) / TILT_RECENTER_S);
+  tilt.t = now;
+  tilt.base.x += k * (x - tilt.base.x); tilt.base.y += k * (y - tilt.base.y);
+  const c = v => Math.max(-1, Math.min(1, v / TILT_FULL_DEG));
+  hover.set(tiltSign * c(x - tilt.base.x), tiltSign * c(y - tilt.base.y));
+}
+function startTilt() {
+  if (tilt.on || DEVICE !== 'phone' || !tiltSign || typeof DeviceOrientationEvent === 'undefined') return;
+  const go = () => { tilt.on = true; window.addEventListener('deviceorientation', onTilt, { passive: true }); };
+  if (typeof DeviceOrientationEvent.requestPermission === 'function')       // iOS 13+: only from a touch
+    DeviceOrientationEvent.requestPermission().then(r => { if (r === 'granted') go(); }).catch(() => {});
+  else go();
+}
+if (DEVICE === 'phone') {
+  eyeReach = TILT_M;
+  if (typeof DeviceOrientationEvent === 'undefined' || typeof DeviceOrientationEvent.requestPermission !== 'function') startTilt();
+  window.addEventListener('touchend', startTilt, { passive: true });         // iOS: the first touch asks
+}
 function screenEye3(dt) {                                        // -> eyeMove: the eye's place about the turning point (m)
   eyeMove.set(0, 0, 0);
   if (!motionOn || !roverParts.length) return eyeMove;
   camera.matrixWorld.extractBasis(eyeRight, eyeUp, eyeFwd);       // the camera's x, y and z (it looks along -z)
   const k = 1 - Math.exp(-dt / 0.25);
   hoverNow.lerp(hover, k);
-  const sx = HOVER_M * hoverNow.x, sy = HOVER_M * hoverNow.y;
+  const sx = eyeReach * hoverNow.x, sy = eyeReach * hoverNow.y;
   return eyeMove.addScaledVector(eyeFwd, -NECK_M).addScaledVector(eyeRight, sx).addScaledVector(eyeUp, sy);
 }
 function look() {
@@ -1317,9 +1390,43 @@ function look() {
 }
 const el = renderer.domElement;
 el.style.touchAction = 'none';
-el.addEventListener('pointerdown', e => { drag = { x: e.clientX, y: e.clientY }; el.setPointerCapture(e.pointerId); });
-el.addEventListener('pointerup', () => { drag = null; });
+// 1.0.1: touch - two fingers pinch the zoom; while driving, one finger drags the rover (up / down: forward / back, left /
+// right: turn, from where it touched, DRIVE_TOUCH_PX for full speed) instead of turning the view
+const touches = new Map();
+let pinch = null;
+const driveTouch = { f: 0, t: 0, from: null };
+const DRIVE_TOUCH_PX = 90;
+const pinchSpan = () => { const [a, b] = [...touches.values()]; return Math.hypot(a.x - b.x, a.y - b.y); };
+el.addEventListener('pointerdown', e => {
+  drag = { x: e.clientX, y: e.clientY }; el.setPointerCapture(e.pointerId);
+  if (e.pointerType === 'touch') {
+    touches.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    if (touches.size === 2) { pinch = { d: pinchSpan(), fov: camera.fov }; drag = null; driveTouch.from = null; }
+    else if (DRIVE.on && touches.size === 1) { driveTouch.from = { x: e.clientX, y: e.clientY, id: e.pointerId }; drag = null; }
+  }
+});
+const touchEnd = e => {
+  drag = null;
+  touches.delete(e.pointerId);
+  if (touches.size < 2) pinch = null;
+  if (driveTouch.from && driveTouch.from.id === e.pointerId) { driveTouch.from = null; driveTouch.f = driveTouch.t = 0; }
+};
+el.addEventListener('pointerup', touchEnd);
+el.addEventListener('pointercancel', touchEnd);
 el.addEventListener('pointermove', e => {
+  if (e.pointerType === 'touch' && touches.has(e.pointerId)) {
+    touches.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    if (pinch && touches.size >= 2) {
+      camera.fov = Math.max(15, Math.min(100, pinch.fov * pinch.d / Math.max(1, pinchSpan())));
+      camera.updateProjectionMatrix();
+      return;
+    }
+    if (driveTouch.from && driveTouch.from.id === e.pointerId) {
+      const c = v => Math.max(-1, Math.min(1, v / DRIVE_TOUCH_PX));
+      driveTouch.f = c(driveTouch.from.y - e.clientY); driveTouch.t = c(driveTouch.from.x - e.clientX);
+      return;
+    }
+  }
   if (!drag || renderer.xr.isPresenting) return;
   const k = THREE.MathUtils.degToRad(camera.fov) / window.innerHeight;
   yaw -= (e.clientX - drag.x) * k; pitch += (e.clientY - drag.y) * k;
@@ -1480,7 +1587,8 @@ renderer.setAnimationLoop(() => {
     world.position.copy(camera.position); fixed.position.set(0, 0, 0);
     if (meshFade) meshFade.copy(fadeBase);
     if (DRIVE.on) {                                              // the arrow keys: up / down both tracks, left / right one against the other
-      const f = (driveKeys.has('ArrowUp') ? 1 : 0) - (driveKeys.has('ArrowDown') ? 1 : 0), t = (driveKeys.has('ArrowLeft') ? 1 : 0) - (driveKeys.has('ArrowRight') ? 1 : 0);
+      const f = Math.max(-1, Math.min(1, (driveKeys.has('ArrowUp') ? 1 : 0) - (driveKeys.has('ArrowDown') ? 1 : 0) + driveTouch.f)),
+            t = Math.max(-1, Math.min(1, (driveKeys.has('ArrowLeft') ? 1 : 0) - (driveKeys.has('ArrowRight') ? 1 : 0) + driveTouch.t));   // 1.0.1: + a finger
       driveStep(dt, Math.max(-1, Math.min(1, f - 0.5 * t)), Math.max(-1, Math.min(1, f + 0.5 * t)));
     }
   }
