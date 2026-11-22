@@ -103,7 +103,8 @@ if (location.hostname === 'ctate7163.github.io' && (/^\/(RPP|MPPP)\/ods(\/|$)/i.
   #nav button#driveBtn { position: absolute; left: 0; bottom: calc(100% + 6px); display: none; }
   /* 0.99.40 (Christian: "The steering wheel icon should have a Beta next to it indicating that it is an experimental
      feature") */
-  #driveBeta { position: absolute; right: calc(100% + 6px); bottom: calc(100% + 18px); display: none; font-size: 11px;
+  /* 1.0.5 (Christian, 22 Nov 2026: "Move the beta icon to the right side of the drive mode button") */
+  #driveBeta { position: absolute; left: calc(100% + 6px); bottom: calc(100% + 18px); display: none; font-size: 11px;
                font-weight: 700; color: #fc6; background: #222c; border: 1px solid #f90; border-radius: 4px; padding: 1px 5px; }
   /* 1.0.1: a phone's fingers - larger targets for the buttons (the device class: body data-device) */
   body[data-device="phone"] #nav button, body[data-device="phone"] #compass button, body[data-device="phone"] #home { min-width: 44px; min-height: 44px; }
@@ -566,10 +567,38 @@ function dropRover() {
 // rover surface of the third mode, colored from the pivot's panorama at its full resolution), drawn in place of the
 // station mesh's own rover part (Christian: "The rover texture in the '3d terrain and rover' looks a lot worse than the
 // 'terrain with rover (3D model)' version")
+// 1.0.6 (Christian, 22 Nov 2026: "it takes too long to load the next site, and the vr screen is black while it
+// switches over. How can we keep the old site until the new one is ready to display? And how can we pre download the
+// next sites 3d assets so they are ready to go earlier?"): the old surfaces stay on until the new ones are made, then
+// the two are swapped in one frame; and the 3D files of the stations before and after this one are fetched in the
+// background once it is up (GLB_CACHE files kept, the oldest dropped)
+const GLB_CACHE = 4;
+const glbCache = new Map();                                      // url -> Promise<ArrayBuffer>
+function fetchGlb(url) {
+  let pr = glbCache.get(url);
+  if (pr) { glbCache.delete(url); glbCache.set(url, pr); return pr; }      // the newest last
+  pr = fetch(url).then(r => { if (!r.ok) throw new Error(`${r.status} ${r.statusText}`); return r.arrayBuffer(); });
+  pr.catch(() => glbCache.delete(url));
+  glbCache.set(url, pr);
+  while (glbCache.size > GLB_CACHE) glbCache.delete(glbCache.keys().next().value);
+  return pr;
+}
+function fileOfStation(q) {                                      // the 3D file the page would open at station q
+  if (!q) return null;
+  const vs = variants(q), here = (variants(panos[cur.s] || {})[cur.v] || {}).key;
+  const v = vs.find(x => x.key === here && x.station_mesh) || vs.find(x => x.key === 'scape3d') || vs.find(x => x.station_mesh);
+  return v && v.station_mesh && v.station_mesh.file ? new URL(v.station_mesh.file, base).href : null;
+}
+function prefetchNeighbors() {
+  if (!panos.length) return;
+  for (const d of [1, -1]) {
+    const u = fileOfStation(panos[(cur.s + d + panos.length) % panos.length]);
+    if (u) fetchGlb(u).catch(e => console.warn('prefetch', u, e));
+  }
+}
 async function showRover(rs, opt = {}) {
   const id = ++roverId;
-  dropRover();
-  if (!rs || !rs.file) return;
+  if (!rs || !rs.file) { dropRover(); return; }
   const made = [];
   try {
     let fadeU = null;
@@ -582,6 +611,7 @@ async function showRover(rs, opt = {}) {
       if (id !== roverId) break;
     }
     if (id !== roverId) { for (const m of made) { m.geometry.dispose(); for (const o of m.userData.textures) o.dispose(); m.material.dispose(); } return; }
+    dropRover();                                                 // 1.0.6: the old station off only now, in the same frame
     roverParts = made;
     for (const m of made) (m.userData.kind === 'rover' ? roverGroup : groundGroup).add(m);
     if (rs.drive && rs.whole) driveStart(rs.drive);              // 0.99.33: the sixth mode
@@ -590,11 +620,14 @@ async function showRover(rs, opt = {}) {
     surfState = { file: rs.file, noHorizon: !!rs.noHorizon, drive: !!(rs.drive && rs.whole), shader: opt.normals ? 'n' : opt.distance ? 'd' : 'c', skin: opt.skin || null };
     if (wholeScene) for (const k in spheres) spheres[k].visible = false;
     anchored = false;
-  } catch (e) { console.warn('rover surface', e); }
+  } catch (e) {
+    console.warn('rover surface', e);
+    if (id === roverId) { for (const m of made) { m.geometry.dispose(); for (const o of m.userData.textures) o.dispose(); m.material.dispose(); } dropRover(); }
+  }
 }
 async function loadSurface(rs, opt) {                            // -> {made: [meshes], fade: the terrain's fade uniform}
   {
-    const buf = await (await fetch(new URL(rs.file, base).href)).arrayBuffer();
+    const buf = await fetchGlb(new URL(rs.file, base).href);          // 1.0.6: perhaps fetched ahead
     const dv = new DataView(buf);
     if (dv.getUint32(0, true) !== 0x46546C67) throw new Error('not a .glb file');
     const n = dv.getUint32(12, true), doc = JSON.parse(new TextDecoder().decode(new Uint8Array(buf, 20, n)));
@@ -750,7 +783,7 @@ const VIEWER_NAME = 'Rover Photogrammetry Viewer (RPV)';
 // 0.99.36 (Christian, 19 Nov 2026: "please put the rpp-rpv viewer version number on the lower left above the site name,
 // images size, and version on which the site was rendered"): the page's own version (the RPP release that wrote it;
 // tests/test_station_mesh.py keeps it equal to rpp.__version__), above the station's line
-const RPV_VERSION = '1.0.4';
+const RPV_VERSION = '1.0.6';
 $('ver').textContent = `RPV viewer ${RPV_VERSION}`;
 const CREDIT = 'Created by Christian Tate at MSSS';   // 0.99.14 (Christian, 17 Nov 2026: 'remove the "for research purposes" phrase')
 // 0.99.39 (Christian, 19 Nov 2026: "remove the code: ... text from the welcome screen"): the credit alone, no link to
@@ -802,14 +835,14 @@ function showWelcome(on) {
     ctlHeadset = place(textPanel([{ text: 'trigger: next site   |   left trigger: back   |   stick: turn', px: 84, weight: 600 },
                                  { text: 'X: info and map   |   Y: home   |   A: view', px: 84, weight: 600 },
                                  { text: 'B: stereo / 3D   |   grip: rover on / off   |   hold Y: leave VR', px: 84, weight: 600 },
-                                 { text: 'stick click: drive (beta)   |   driving: sticks forward / back, left / right turn', px: 84, weight: 600 }],
+                                 { text: 'hold B: drive (beta)   |   driving: sticks forward / back, left / right turn', px: 84, weight: 600 }],
                                 { back: 'rgba(0,0,0,0.35)', uniform: true }), WELCOME_AZ_DEG, -6, 5, 3.6);   // 0.99.14: one size
     // 0.99.37 (Christian, 19 Nov 2026: "In the browser 2d version. Show a differ set of controls, including using the
     // space bar to change the color map"): on a screen the keys and the mouse instead
     ctlScreen = place(textPanel([{ text: 'space: color map   |   \u2192: next site   |   \u2190: previous site   |   V: terrain', px: 84, weight: 600 },   // 1.0.3 (Christian, 21 Nov 2026: "put the space bar first, and split the right and left arrows to next site and previous site")
                                  { text: 'drag or W A S D: look   |   wheel: zoom   |   N E S W O: face   |   L: eye', px: 84, weight: 600 },
                                  { text: 'I: info and map   |   H: home   |   B: stereo / full 3D   |   R: rover on / off', px: 84, weight: 600 },
-                                 { text: 'P: motion   |   steering wheel button: drive the rover (beta)   |   driving: arrow keys', px: 84, weight: 600 }],
+                                 { text: 'P: motion   |   steering wheel button or hold B: drive (beta)   |   driving: arrow keys', px: 84, weight: 600 }],
                                 { back: 'rgba(0,0,0,0.35)', uniform: true }), WELCOME_AZ_DEG, -6, 5, 3.6);
     // 1.0.1: a phone's controls (touch and tilt), and a headset's browser before it enters VR (the VR button first)
     ctlPhone = place(textPanel([{ text: 'swipe: look   |   pinch: zoom   |   tilt the phone: move the eye', px: 84, weight: 600 },
@@ -820,7 +853,7 @@ function showWelcome(on) {
     ctlHeadsetOut = place(textPanel([{ text: 'press the VR button at the bottom to step into the station', px: 84, weight: 700, color: MARK_BLUE },
                                      { text: 'in VR: trigger: next site   |   left trigger: back   |   stick: turn', px: 84, weight: 600 },
                                      { text: 'X: info and map   |   Y: home   |   A: view   |   B: stereo / 3D', px: 84, weight: 600 },
-                                     { text: 'grip: rover on / off   |   stick click: drive (beta)   |   hold Y: leave VR', px: 84, weight: 600 }],
+                                     { text: 'grip: rover on / off   |   hold B: drive (beta)   |   hold Y: leave VR', px: 84, weight: 600 }],
                                     { back: 'rgba(0,0,0,0.35)', uniform: true }), WELCOME_AZ_DEG, -6, 5, 3.6);
     welcome.add(ctlHeadset, ctlScreen, ctlPhone, ctlHeadsetOut);
   }
@@ -1193,6 +1226,7 @@ async function show() {
                  (p.rpp || p.mppp) ? `rendered with RPP ${p.rpp || p.mppp}` : ''];
     setNote();
     msg('');
+    prefetchNeighbors();                                         // 1.0.6: the next and previous stations' 3D files
   } catch (e) { if (id === loadId) msg(`could not load ${url}: ${e.message || e}`); }
 }
 
@@ -1331,7 +1365,26 @@ window.addEventListener('keydown', e => {
   else if (e.key === 'p' || e.key === 'P') { motionOn = !motionOn; }     // 0.99.32: the screen's eye movement on / off
   else if (e.key === 'i' || e.key === 'I') toggleInfo();
   else if (e.key === 'h' || e.key === 'H') goHome();                     // 0.98.28: as the headset's Y
-  else if (e.key === 'b' || e.key === 'B') stereoOrFull();               // 0.98.28: as the headset's B (0.99.41: stereo / full 3D)
+  else if (e.key === 'b' || e.key === 'B') {                             // 0.98.28: as the headset's B (0.99.41: stereo / full 3D)
+    // 1.0.5 (Christian, 22 Nov 2026: "Enter it by holding B"): B held for HOLD_B_MS starts the drive where the station
+    // has it (or ends it); a short press is stereo / full 3D, done when the key comes up
+    if (!e.repeat && !bKey) bKey = { timer: setTimeout(() => { bKey.done = true; driveByHold(); }, HOLD_B_MS), done: false };
+  }
+});
+const HOLD_B_MS = 700;
+let bKey = null;
+function driveByHold() {
+  if (mode === 'drive' || variants(panos[cur.s] || {}).some(q => q.key === 'drive3d')) driveToggle();
+}
+window.addEventListener('keyup', e => {
+  if ((e.key === 'b' || e.key === 'B') && bKey) {
+    clearTimeout(bKey.timer);
+    if (!bKey.done) stereoOrFull();
+    bKey = null;
+  }
+});
+window.addEventListener('blur', () => {         // the page lost the keyboard with B down: no keyup will come
+  if (bKey) { clearTimeout(bKey.timer); bKey = null; }
 });
 
 // ---------------------------------------------------------------- looking around on a screen
@@ -1517,7 +1570,7 @@ function pressed(src, i) {                       // button i of this controller 
   held.set(key, is);
   return is && !was;
 }
-let stickL = 0, stickR = 0, stickTurn = 0, yDown = 0, yDone = false;
+let stickL = 0, stickR = 0, stickTurn = 0, yDown = 0, yDone = false, bDown = 0, bDone = false;
 function buttons(dt) {                           // xr-standard: button 4 is A (right) / X (left), button 5 is B (right) / Y (left)
   const session = renderer.xr.getSession();
   if (!session) return;
@@ -1533,12 +1586,16 @@ function buttons(dt) {                           // xr-standard: button 4 is A (
       if (down && !yDown) { yDown = now; yDone = false; }
       if (down && !yDone && now - yDown > 1000) { yDone = true; session.end(); return; }
       if (!down && yDown) { if (!yDone) goHome(); yDown = 0; }
-    } else if (pressed(src, 5)) stereoOrFull();
-    if (false) { if (left) goHome(); else stereoOrFull(); }         // 0.98.28: Y (left): home, facing west; B (right): 0.99.41 stereo / full 3D
+    } else {                                                     // 1.0.5: B held - the drive; a short press: stereo / full 3D
+      const down = !!(gp.buttons[5] && gp.buttons[5].pressed), now = performance.now();
+      if (down && !bDown) { bDown = now; bDone = false; }
+      if (down && !bDone && now - bDown > HOLD_B_MS) { bDone = true; driveByHold(); }
+      if (!down && bDown) { if (!bDone) stereoOrFull(); bDown = 0; }
+    }
     // 0.99.40 (Christian, 19 Nov 2026: "In VR mode, enter driving/ steering mode with a click on the joystick. Left and
     // right still rotate the view and forward and back on the left and right controler works in like skid steering"):
     // a thumbstick click (xr-standard button 3) starts the drive where the station has it, and ends it
-    if (pressed(src, 3) && (mode === 'drive' || variants(panos[cur.s] || {}).some(q => q.key === 'drive3d'))) driveToggle();
+    // 1.0.5 (Christian, 22 Nov 2026: "Enter it by holding B"): the stick's click no longer starts or ends the drive
     if (DRIVE.on) {                                              // 0.99.33: a stick's forward / back axis is its side's track
       const y = -(gp.axes.length >= 4 ? gp.axes[3] : (gp.axes[1] || 0));
       const t = Math.abs(y) > STICK_DEAD ? Math.sign(y) * (Math.abs(y) - STICK_DEAD) / (1 - STICK_DEAD) : 0;
@@ -1645,6 +1702,13 @@ diagnostics();
   try {
     const j = await (await fetch(index, { cache: 'no-cache' })).json();
     panos = j.panos || j;
+    // 1.0.5 (Christian, 22 Nov 2026: "From the viewer, let's remove or hide all sites that don't have full-3d models"):
+    // a station without the full 3D model is left out of the page; the list keeps it, and it shows again once its
+    // model is made and uploaded.  ?all=1 shows every station of the list
+    if (new URLSearchParams(location.search).get('all') !== '1') {
+      const with3d = panos.filter(p => p.welcome || variants(p).some(q => q.key === 'scape3d'));
+      if (with3d.some(p => !p.welcome)) panos = with3d;
+    }
     traverse = j.traverse || null;
     if (traverse && traverse.ortho && traverse.ortho.file)       // the map's orbital picture: small, fetched once
       fetch(new URL(traverse.ortho.file, base).href).then(r => r.blob()).then(createImageBitmap)
