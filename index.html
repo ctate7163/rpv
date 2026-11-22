@@ -750,7 +750,7 @@ const VIEWER_NAME = 'Rover Photogrammetry Viewer (RPV)';
 // 0.99.36 (Christian, 19 Nov 2026: "please put the rpp-rpv viewer version number on the lower left above the site name,
 // images size, and version on which the site was rendered"): the page's own version (the RPP release that wrote it;
 // tests/test_station_mesh.py keeps it equal to rpp.__version__), above the station's line
-const RPV_VERSION = '1.0.2';
+const RPV_VERSION = '1.0.4';
 $('ver').textContent = `RPV viewer ${RPV_VERSION}`;
 const CREDIT = 'Created by Christian Tate at MSSS';   // 0.99.14 (Christian, 17 Nov 2026: 'remove the "for research purposes" phrase')
 // 0.99.39 (Christian, 19 Nov 2026: "remove the code: ... text from the welcome screen"): the credit alone, no link to
@@ -806,14 +806,14 @@ function showWelcome(on) {
                                 { back: 'rgba(0,0,0,0.35)', uniform: true }), WELCOME_AZ_DEG, -6, 5, 3.6);   // 0.99.14: one size
     // 0.99.37 (Christian, 19 Nov 2026: "In the browser 2d version. Show a differ set of controls, including using the
     // space bar to change the color map"): on a screen the keys and the mouse instead
-    ctlScreen = place(textPanel([{ text: '\u2190 \u2192: site   |   space: color map   |   R: rover on / off   |   V: terrain', px: 84, weight: 600 },
+    ctlScreen = place(textPanel([{ text: 'space: color map   |   \u2192: next site   |   \u2190: previous site   |   V: terrain', px: 84, weight: 600 },   // 1.0.3 (Christian, 21 Nov 2026: "put the space bar first, and split the right and left arrows to next site and previous site")
                                  { text: 'drag or W A S D: look   |   wheel: zoom   |   N E S W O: face   |   L: eye', px: 84, weight: 600 },
-                                 { text: 'I: info and map   |   H: home   |   B: stereo / full 3D   |   P: motion on / off', px: 84, weight: 600 },
-                                 { text: 'steering wheel button: drive the rover (beta)   |   driving: the arrow keys', px: 84, weight: 600 }],
+                                 { text: 'I: info and map   |   H: home   |   B: stereo / full 3D   |   R: rover on / off', px: 84, weight: 600 },
+                                 { text: 'P: motion   |   steering wheel button: drive the rover (beta)   |   driving: arrow keys', px: 84, weight: 600 }],
                                 { back: 'rgba(0,0,0,0.35)', uniform: true }), WELCOME_AZ_DEG, -6, 5, 3.6);
     // 1.0.1: a phone's controls (touch and tilt), and a headset's browser before it enters VR (the VR button first)
     ctlPhone = place(textPanel([{ text: 'swipe: look   |   pinch: zoom   |   tilt the phone: move the eye', px: 84, weight: 600 },
-                                { text: '\u2039 \u203a buttons: site   |   rover button: rover on / off   |   N E S W O: face', px: 84, weight: 600 },
+                                { text: '\u203a: next site   |   \u2039: previous site   |   rover button: rover on / off   |   N E S W O: face', px: 84, weight: 600 },
                                 { text: 'the lists at the top: station, color map, stereo / full 3D', px: 84, weight: 600 },
                                 { text: 'steering wheel button: drive (beta)   |   driving: drag up / down, left / right', px: 84, weight: 600 }],
                                { back: 'rgba(0,0,0,0.35)', uniform: true }), WELCOME_AZ_DEG, -6, 5, 3.6);
