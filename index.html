@@ -334,7 +334,7 @@ const ROVER_FRAG = `
   uniform vec2 panoSize, rangeSize;      // the panorama (px); the range image (px)
   uniform vec2 rows;                     // the first panorama row of the images, and their number of rows
   uniform float az0, rangeStep, rangeOffset, unitsPerM, biasM, biasRel, grayShade, overOwn;
-  uniform vec3 gray;
+  uniform vec3 gray, gain;
   float seen(vec2 ij, float dist) {      // one range pixel: is the point the surface the pivot sees there?
     if (ij.y < 0.0 || ij.y > rangeSize.y - 1.0) return 0.0;
     vec4 t = texture2D(rangeMap, vec2(fract((ij.x + 0.5) / rangeSize.x), (ij.y + 0.5) / rangeSize.y));
@@ -358,7 +358,7 @@ const ROVER_FRAG = `
     float vt = (row - rows.x) / rows.y;
     float dux = dFdx(ua), duy = dFdy(ua);
     dux -= floor(dux + 0.5); duy -= floor(duy + 0.5);
-    vec3 c = texture2DGradEXT(colorMap, vec2(u, vt), vec2(dux, dFdx(vt)), vec2(duy, dFdy(vt))).rgb;
+    vec3 c = min(texture2DGradEXT(colorMap, vec2(u, vt), vec2(dux, dFdx(vt)), vec2(duy, dFdy(vt))).rgb * gain, 1.0);
     vec2 q = vec2((fract(ua) * panoSize.x - 0.5 - rangeOffset) / rangeStep, (row - 0.5 - rows.x - rangeOffset) / rangeStep);
     vec2 i0 = floor(q), f = q - i0;
     float lit = mix(mix(seen(i0, dist), seen(i0 + vec2(1.0, 0.0), dist), f.x),
@@ -376,15 +376,14 @@ const ROVER_FRAG = `
 // mast axis (Christian, 18 Nov 2026: "there should be fading where the mesh meets the sky sphere"): into the panorama
 // behind it (fourth mode) or into the surface that runs on to the horizon (fifth mode).  The textures are shown as
 // they are stored (no color conversion), like the rover surface's.
-const SHELL_PANO_M = 90;                                         // 1.0.6: the fifth mode's shell beyond: the panorama
 const MESH_VERT = `
   varying vec2 vUv; varying float vR;
   void main() { vUv = uv; vR = length(position.xz); gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }`;
 const MESH_FRAG = `
   precision highp float;
   varying vec2 vUv; varying float vR;
-  uniform sampler2D map; uniform vec2 fade;
-  void main() { gl_FragColor = vec4(texture2D(map, vUv).rgb, fade.y > fade.x ? 1.0 - smoothstep(fade.x, fade.y, vR) : 1.0); }`;
+  uniform sampler2D map; uniform vec2 fade; uniform vec3 gain;
+  void main() { gl_FragColor = vec4(min(texture2D(map, vUv).rgb * gain, 1.0), fade.y > fade.x ? 1.0 - smoothstep(fade.x, fade.y, vR) : 1.0); }`;
 // 0.99.38 (Christian, 19 Nov 2026: "The 3d terrain and rover should have its own normal map which changes with view"):
 // in the normal-map view the 3D surfaces are drawn with their own normals - each triangle's, in the surface's frame
 // (x east, y up, z south), in the colors of the panoramas' normal map: RGB = (1 + [east, north, up]) / 2 - so the
@@ -629,7 +628,7 @@ async function showRover(rs, opt = {}) {
   if (!rs || !rs.file) { dropRover(); return; }
   const made = [];
   try {
-    let fadeU = null, domeOpen = false;
+    let fadeU = null;
     const over = !!opt.roverOver && !opt.normals && !opt.distance;          // 1.0.6: both rovers, the projected one on top
     const second = opt.rover && opt.rover.file && rs.triangles != null && (over || !opt.roverOver);
     for (const [file, isMain] of [[rs, true]].concat(second ? [[opt.rover, false]] : [])) {
@@ -637,7 +636,6 @@ async function showRover(rs, opt = {}) {
                                             skipRover: isMain && !!second && !over,
                                             skipHorizon: isMain && !!rs.noHorizon, skin: isMain ? opt.skin : null });
       if (got.fade) fadeU = got.fade;
-      if (got.domeLeft) domeOpen = true;
       made.push(...got.made);
       if (id !== roverId) break;
     }
@@ -649,8 +647,7 @@ async function showRover(rs, opt = {}) {
     meshFade = fadeU; fadeBase = fadeU ? fadeU.clone() : null;
     wholeScene = !!rs.whole && made.some(m => m.userData.kind === 'horizon');     // the fifth mode: no panorama behind
     surfState = { file: rs.file, noHorizon: !!rs.noHorizon, drive: !!(rs.drive && rs.whole), shader: opt.normals ? 'n' : opt.distance ? 'd' : 'c', skin: opt.skin || null };
-    if (wholeScene && !domeOpen) for (const k in spheres) spheres[k].visible = false;   // 1.0.6: the panorama is the sky
-    else if (domeOpen) for (const k in spheres) spheres[k].visible = true;
+    if (wholeScene) for (const k in spheres) spheres[k].visible = false;   // the fifth mode: its shell holds the whole view
     anchored = false;
   } catch (e) {
     console.warn('rover surface', e);
@@ -668,7 +665,7 @@ async function loadSurface(rs, opt) {                            // -> {made: [m
     const image = async (i, opt) => { const iv = view(doc.images[i].bufferView); return createImageBitmap(new Blob([new Uint8Array(buf, bin + (iv.byteOffset || 0), iv.byteLength)], { type: doc.images[i].mimeType }), opt); };
     const pr = doc.asset && doc.asset.extras && doc.asset.extras.projection;
     const made = [], shared = new Map();
-    let fadeU = null, domeLeft = false;
+    let fadeU = null;
     if (opt.normals || opt.distance) {                           // 0.99.38: the surfaces' own normals, no textures (0.99.41: or their distance)
       for (const me of doc.meshes) for (const prim of me.primitives) {
         const kind = pr ? 'rover' : (me.name || 'rover');
@@ -695,21 +692,10 @@ async function loadSurface(rs, opt) {                            // -> {made: [m
       if (opt.skipHorizon && !pr && me.name === 'horizon') continue;           // 0.99.40: its shell left out
       const g = new THREE.BufferGeometry();
       g.setAttribute('position', new THREE.BufferAttribute(arr(prim.attributes.POSITION, Float32Array, 3), 3));
-      // 1.0.6, 22 Nov (Christian, Hippo Pools: "skylines to the north clip a nearby hill and have sky artifacts"): the
-      // fifth mode's shell beyond the mesh - the far field (100 and 300 m, which also carries the sky up to 30 deg) and
-      // the dome - was colored from the full 3D texture, where the sky has a few texels per degree and, below the
-      // texture's one skyline circle and on the far field, the frames' own colors with their edges: bands with straight
-      // sides, and hills cut where the shell's skyline is lower than theirs.  The shell's triangles whose corners are
-      // all farther than SHELL_PANO_M are now left out and the panorama behind shows there: its sky is the one smooth
-      // fit and its hills are whole.  (The parallax lost: under 0.6 deg out there for a head 1 m off the pivot.)
-      { let idx = arr(prim.indices, Uint32Array, 1);
-        if (!pr && me.name === 'horizon' && rs.whole) {
-          const P = g.attributes.position.array, lim2 = SHELL_PANO_M ** 2, onDome = k => P[3 * k] ** 2 + P[3 * k + 1] ** 2 + P[3 * k + 2] ** 2 > lim2;
-          const keep = [];
-          for (let q = 0; q < idx.length; q += 3) if (!(onDome(idx[q]) && onDome(idx[q + 1]) && onDome(idx[q + 2]))) keep.push(idx[q], idx[q + 1], idx[q + 2]);
-          if (keep.length < idx.length) { idx = new Uint32Array(keep); domeLeft = true; }
-        }
-        g.setIndex(new THREE.BufferAttribute(idx, 1)); }
+      // (22-23 Nov: the shell beyond 90 m was left out for the panorama behind - taken back: "the shell should hold the
+      // whole view so that the viewer does not need to hold another large res image as the sky sphere"; the shell's sky
+      // is made right in the processing instead, 1.0.7)
+      g.setIndex(new THREE.BufferAttribute(arr(prim.indices, Uint32Array, 1), 1));
       let mat, textures, baseTex = null;
       if (pr) {                                                  // 0.98.14: the model, colored from the pivot
         const col = new THREE.Texture(await image(0));
@@ -726,7 +712,7 @@ async function loadSurface(rs, opt) {                            // -> {made: [m
           rangeStep: { value: pr.depth_step }, rangeOffset: { value: pr.depth_offset_px || 0 }, unitsPerM: { value: pr.depth_units_per_m },
           biasM: { value: pr.bias_m }, biasRel: { value: pr.bias_rel }, grayShade: { value: pr.grey_shade || 0 },
           gray: { value: new THREE.Vector3(pr.grey_rgb[0] / 255, pr.grey_rgb[1] / 255, pr.grey_rgb[2] / 255) },
-          overOwn: { value: opt.over ? 1.0 : 0.0 } } });
+          overOwn: { value: opt.over ? 1.0 : 0.0 }, gain: GAIN } });
         if (opt.over) { mat.polygonOffset = true; mat.polygonOffsetFactor = -1; mat.polygonOffsetUnits = -4; }   // in front of the same triangles
         textures = [col, rng];
       } else {                                                   // a file of before 0.98.14
@@ -759,7 +745,7 @@ async function loadSurface(rs, opt) {                            // -> {made: [m
           const fade = new THREE.Vector2(0, 0);
           if (terrain && rs.fade_m) { fade.set(rs.fade_m[0], rs.fade_m[1]); fadeU = fade; }
           mat = new THREE.ShaderMaterial({ vertexShader: MESH_VERT, fragmentShader: MESH_FRAG, side: THREE.DoubleSide,
-            uniforms: { map: { value: t }, fade: { value: fade } }, transparent: terrain && !!rs.fade_m,
+            uniforms: { map: { value: t }, fade: { value: fade }, gain: GAIN }, transparent: terrain && !!rs.fade_m,
             depthTest: !horizon, depthWrite: !horizon });         // the horizon's rings are stored far to near: drawn in order
         } else mat = new THREE.MeshBasicMaterial({ side: THREE.DoubleSide, map: t });
       }
@@ -771,7 +757,7 @@ async function loadSurface(rs, opt) {                            // -> {made: [m
       m.visible = roverOn || m.userData.kind !== 'rover';
       made.push(m);
     }
-    return { made, fade: fadeU, domeLeft };
+    return { made, fade: fadeU };
   }
 }
 
@@ -842,7 +828,7 @@ const VIEWER_NAME = 'Rover Photogrammetry Viewer (RPV)';
 const RPV_VERSION = '1.0.6';
 // 1.0.6, 22 Nov: the page's own date, shown beside the version - a viewer fix between versions changes only this, so
 // a phone or headset shows whether it has the newest page (a tab left open keeps the page it loaded)
-const RPV_PAGE = '22 Nov 23:30';
+const RPV_PAGE = '23 Nov 07:40';
 function setVer(made) {                                           // made: "rendered with RPP x (date)" of the station shown
   $('ver').textContent = [`RPV viewer ${RPV_VERSION} (${RPV_PAGE})`, made].filter(Boolean).join('  |  ');
 }
@@ -1074,15 +1060,38 @@ const startAz = p => p.yaw_deg != null ? p.yaw_deg : (p.welcome ? WELCOME_AZ_DEG
 const maxTex = renderer.capabilities.maxTextureSize;
 
 function variants(p) { return p.variants || []; }
+function atLeast(v, w) {                         // version v (e.g. "1.0.6", "0.99.53", "1.0.0rc1") >= w
+  const a = String(v || '0').split(/[.]/).map(x => parseInt(x, 10) || 0), b = w.split('.').map(Number);
+  for (let i = 0; i < 3; i++) if ((a[i] || 0) !== b[i]) return (a[i] || 0) > b[i];
+  return !/rc|a|b/.test(String(v).split('.').pop().replace(/^\d+/, ''));
+}
+// 1.0.6, 23 Nov (Christian: "for now, just make the raw image from the rescaled standard image. Hold of on the enhanced
+// and toned images. For now remove the toned images from the viewer"): the original color is the standard picture
+// (file and skin) with each channel scaled - no picture of its own is loaded.  The standard view is the frames' linear
+// values x the white balance (rpp.ibr.linear16, value for value up to its knee at 235), and the original color divided
+// that balance out with the brightness of a gray kept (rpp.ibr.color_products.raw_divisor); so the scale is
+// 1 / raw_divisor in RGB: the Navcams' balance [1.1, 1.4, 1.8] and Mastcam-Z's [1.0, 1.3, 2.0] (every station's
+// ods.json linear16.white_balance; a station may give its own as "raw_gain" in panos.json).  The enhanced tone view is
+// left out.
+const RAW_GAIN = { navcam: [1.2215, 0.9598, 0.7465], zcam: [1.2518, 0.9629, 0.6259] };
+const GAIN = { value: new THREE.Vector3(1, 1, 1) };             // shared by the 3D surfaces' shaders
+const rawGain = p => (p && p.raw_gain) || (/_Z34$/.test((p && p.id) || '') ? RAW_GAIN.zcam : RAW_GAIN.navcam);
+const fileView = k => k === 'raw color' ? 'standard' : k;       // the picture a view is made from
+function setGain(p, k) {
+  const g = k === 'raw color' ? rawGain(p) : [1, 1, 1];
+  GAIN.value.set(g[0], g[1], g[2]);
+  // the panorama spheres sample sRGB textures in linear light: a stored value x g is linear x g^2.2 (near enough)
+  for (const m of [material, centerMaterial]) if (m.map) m.color.setRGB(g[0] ** 2.2, g[1] ** 2.2, g[2] ** 2.2);
+}
 // 0.99.40 (Christian, 19 Nov 2026: "The full 3d terrain model does not need the ods since the photo sphere is built into
 // the 3d model"): a whole variant (the full 3D terrain, and the drive on it) loads no panorama - its views are its own
 // texture (standard color) and the normal map
 const isWhole = q => !!(q && q.station_mesh && q.station_mesh.whole);
 function views(p, v) {
-  const q = variants(p)[v] || {}, ks = Object.keys(q.views || {});
+  const q = variants(p)[v] || {}, ks = Object.keys(q.views || {}).filter(k => k !== 'enhanced tone');   // 1.0.6, 23 Nov
   if (!isWhole(q)) return ks;
   const sk = (q.station_mesh && q.station_mesh.skins) || {};     // 0.99.41: the color skins of the full 3D texture
-  const w = ks.filter(k => k === 'standard' || sk[k] || /^normal/.test(k) || k === 'range log' || k === 'distance map');
+  const w = ks.filter(k => k === 'standard' || k === 'raw color' || sk[k] || /^normal/.test(k) || k === 'range log' || k === 'distance map');
   return w.length ? w : ks.slice(0, 1);
 }
 // 0.98.30 (Christian, 16 Nov 2026: 'Change "normal" to "normal map" and "range log" to "distance map"'): the names of
@@ -1170,8 +1179,8 @@ function centerFileOf(full) {
   const p = panos[cur.s], vr = p && variants(p)[cur.v], names = p ? views(p, cur.v) : [];
   const k = names[cur.w];
   if (isWhole(vr)) return null;                                  // 0.99.40: the full 3D terrain draws no panorama
-  if (full !== false && fullOk() && vr && vr.center_full && vr.center_full[k]) return vr.center_full[k];
-  return (vr && vr.center && vr.center[k]) || null;
+  if (full !== false && fullOk() && vr && vr.center_full && vr.center_full[fileView(k)]) return vr.center_full[fileView(k)];
+  return (vr && vr.center && vr.center[fileView(k)]) || null;
 }
 async function decodePano(url) {                                 // a picture as a texture for a sphere
   const blob = await (await fetch(url)).blob();
@@ -1207,7 +1216,8 @@ async function loadCenter() {
     if (id !== centerId) { bmp.close(); return; }
     if (centerTex) { centerTex.dispose(); if (centerTex.image && centerTex.image.close) centerTex.image.close(); }
     centerTex = panoTexture(bmp); centerUrl = url; centerSize = `${bmp.width} x ${bmp.height}`;
-    centerMaterial.map = centerTex; centerMaterial.color.set(0xffffff); centerMaterial.needsUpdate = true;
+    centerMaterial.map = centerTex; centerMaterial.needsUpdate = true;
+    setGain(panos[cur.s], viewName());
     msg(''); setNote();
   } catch (e) {
     if (id !== centerId) return;
@@ -1233,7 +1243,7 @@ async function show() {
   mode = MODE_OF[(variants(p)[cur.v] || {}).key] || 'stereo';    // 0.99.40
   fill();
   updateNav();
-  const vr = variants(p)[cur.v], file = vr && vr.views[names[cur.w]];
+  const vr = variants(p)[cur.v], file = vr && (vr.views[fileView(names[cur.w])] || vr.views[names[cur.w]]);
   if (!file) { msg('no image for this choice'); return; }
   history.replaceState(null, '', hashOf(p, vr));
   anchored = false;                                             // 0.98.30: the 3D rover set again at the eyes' center
@@ -1241,6 +1251,7 @@ async function show() {
   // the look direction"): so a change of view - a skin too, which loads nothing - puts the 3D surfaces back with their
   // pivot at the eyes in a headset, the heading as it was (only the position is set: see the render loop)
   const id = ++loadId, url = new URL(file, base).href, whole = isWhole(vr);
+  setGain(p, names[cur.w]);
   msg(`loading ${p.title || p.id} ...`);
   setEye(wantEye);                                               // 0.99.36: center where this choice has one, else the left eye
   try {
@@ -1251,7 +1262,8 @@ async function show() {
       const t = panoTexture(bmp);
       if (texture) { texture.dispose(); if (texture.image && texture.image.close) texture.image.close(); }
       texture = t;
-      material.map = t; material.color.set(0xffffff); material.needsUpdate = true;
+      material.map = t; material.needsUpdate = true;
+      setGain(p, names[cur.w]);
       size = `${bmp.width} x ${bmp.height}`;
     }
     showMark(color(names[cur.w]) ? vr.ground_mark : null);        // not over the range and normal views
@@ -1277,7 +1289,7 @@ async function show() {
     const scape = null;                                          // 0.99.52: no local 3D mode
     const sm = scape ? Object.assign({}, scape.station_mesh, { whole: false, drive: undefined, noHorizon: true }) : vr.station_mesh;
     const dView = /^(distance|range)/.test(names[cur.w] || '');   // 0.99.41: a 3D mode's distance map from its surfaces
-    const skinFile = sm && sm.skins && sm.skins[names[cur.w]];      // 0.99.41: the color skin of the full 3D texture
+    const skinFile = sm && sm.skins && names[cur.w] !== 'raw color' && sm.skins[names[cur.w]];   // 1.0.6: raw from the file's own      // 0.99.41: the color skin of the full 3D texture
     const skinUrl = skinFile ? new URL(skinFile, base).href : null;
     const surf = sm && color(names[cur.w]) && canSwap(sm, skinUrl) ? swapSkin(skinUrl)       // 0.99.41: the picture alone
       : sm && (color(names[cur.w]) || nmView || dView) ? showRover(sm, { normals: nmView, distance: dView,
@@ -1798,6 +1810,9 @@ diagnostics();
     if (new URLSearchParams(location.search).get('all') !== '1') {
       const with3d = panos.filter(p => p.welcome || variants(p).some(q => q.key === 'scape3d'));
       if (with3d.some(p => !p.welcome)) panos = with3d;
+      // 1.0.6, 23 Nov (Christian: "Remove the and chal rocks and oeb sites until they are remade"): Chal Rocks and the
+      // Butler landing site (OEB) are left out until a station of theirs is made again with RPP 1.0.7 or later
+      panos = panos.filter(p => p.welcome || !(/chal rocks|butler landing/i.test(p.title || '') && !atLeast(p.rpp || p.mppp, '1.0.7')));
     }
     traverse = j.traverse || null;
     if (traverse && traverse.ortho && traverse.ortho.file)       // the map's orbital picture: small, fetched once
