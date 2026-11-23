@@ -327,7 +327,7 @@ const ROVER_FRAG = `
   uniform sampler2D colorMap, rangeMap;
   uniform vec2 panoSize, rangeSize;      // the panorama (px); the range image (px)
   uniform vec2 rows;                     // the first panorama row of the images, and their number of rows
-  uniform float az0, rangeStep, rangeOffset, unitsPerM, biasM, biasRel, grayShade;
+  uniform float az0, rangeStep, rangeOffset, unitsPerM, biasM, biasRel, grayShade, overOwn;
   uniform vec3 gray;
   float seen(vec2 ij, float dist) {      // one range pixel: is the point the surface the pivot sees there?
     if (ij.y < 0.0 || ij.y > rangeSize.y - 1.0) return 0.0;
@@ -357,6 +357,11 @@ const ROVER_FRAG = `
     vec2 i0 = floor(q), f = q - i0;
     float lit = mix(mix(seen(i0, dist), seen(i0 + vec2(1.0, 0.0), dist), f.x),
                     mix(seen(i0 + vec2(0.0, 1.0), dist), seen(i0 + vec2(1.0, 1.0), dist), f.x), f.y);
+    if (overOwn > 0.5) {                 // 1.0.6: over the 3D file's own rover - only where the pivot sees it
+      if (lit < 0.5) discard;
+      gl_FragColor = vec4(c, 1.0);
+      return;
+    }
     vec3 n = normalize(cross(dFdx(vP), dFdy(vP)));
     vec3 g = gray * (1.0 - grayShade * (1.0 - abs(n.y)));
     gl_FragColor = vec4(mix(g, c, lit), 1.0);
@@ -618,9 +623,11 @@ async function showRover(rs, opt = {}) {
   const made = [];
   try {
     let fadeU = null;
-    for (const [file, isMain] of [[rs, true]].concat(opt.rover && opt.rover.file && rs.triangles != null ? [[opt.rover, false]] : [])) {
-      const got = await loadSurface(file, { normals: !!opt.normals, distance: !!opt.distance,
-                                            skipRover: isMain && !!opt.rover && rs.triangles != null,
+    const over = !!opt.roverOver && !opt.normals && !opt.distance;          // 1.0.6: both rovers, the projected one on top
+    const second = opt.rover && opt.rover.file && rs.triangles != null && (over || !opt.roverOver);
+    for (const [file, isMain] of [[rs, true]].concat(second ? [[opt.rover, false]] : [])) {
+      const got = await loadSurface(file, { normals: !!opt.normals, distance: !!opt.distance, over: !isMain && over,
+                                            skipRover: isMain && !!second && !over,
                                             skipHorizon: isMain && !!rs.noHorizon, skin: isMain ? opt.skin : null });
       if (got.fade) fadeU = got.fade;
       made.push(...got.made);
@@ -695,7 +702,9 @@ async function loadSurface(rs, opt) {                            // -> {made: [m
           rows: { value: new THREE.Vector2(pr.rows[0], pr.rows[1] - pr.rows[0]) }, az0: { value: THREE.MathUtils.degToRad(pr.azimuth0_deg || 0) },
           rangeStep: { value: pr.depth_step }, rangeOffset: { value: pr.depth_offset_px || 0 }, unitsPerM: { value: pr.depth_units_per_m },
           biasM: { value: pr.bias_m }, biasRel: { value: pr.bias_rel }, grayShade: { value: pr.grey_shade || 0 },
-          gray: { value: new THREE.Vector3(pr.grey_rgb[0] / 255, pr.grey_rgb[1] / 255, pr.grey_rgb[2] / 255) } } });
+          gray: { value: new THREE.Vector3(pr.grey_rgb[0] / 255, pr.grey_rgb[1] / 255, pr.grey_rgb[2] / 255) },
+          overOwn: { value: opt.over ? 1.0 : 0.0 } } });
+        if (opt.over) { mat.polygonOffset = true; mat.polygonOffsetFactor = -1; mat.polygonOffsetUnits = -4; }   // in front of the same triangles
         textures = [col, rng];
       } else {                                                   // a file of before 0.98.14
         g.setAttribute('uv', new THREE.BufferAttribute(arr(prim.attributes.TEXCOORD_0, Float32Array, 2), 2));
@@ -810,7 +819,7 @@ const VIEWER_NAME = 'Rover Photogrammetry Viewer (RPV)';
 const RPV_VERSION = '1.0.6';
 // 1.0.6, 22 Nov: the page's own date, shown beside the version - a viewer fix between versions changes only this, so
 // a phone or headset shows whether it has the newest page (a tab left open keeps the page it loaded)
-const RPV_PAGE = '22 Nov 18:40';
+const RPV_PAGE = '22 Nov 19:40';
 $('ver').textContent = `RPV viewer ${RPV_VERSION} (page of ${RPV_PAGE})`;
 const CREDIT = 'Created by Christian Tate at MSSS';   // 0.99.14 (Christian, 17 Nov 2026: 'remove the "for research purposes" phrase')
 // 0.99.39 (Christian, 19 Nov 2026: "remove the code: ... text from the welcome screen"): the credit alone, no link to
@@ -1224,9 +1233,12 @@ async function show() {
     // projected on the sphere is from one point and does not include the paralax from a stereo pair. What I asked for
     // earlier was that every surface seen by the navcams is textured by them"): the 3D file's own rover is textured
     // from every frame that sees each surface - both Navcams of each pair, from their own places (rpp.ibr.station_mesh,
-    // rover texture charts, 1.0.0rc1) - but since 0.99.38 the viewer laid the rover projected from the pivot's
-    // panorama over it (the third mode's rover surface), which sees only what the pivot sees.  A 3D file with its own
-    // rover now shows that rover; the projected one is for a file without one (and for the third mode).
+    // rover texture charts) - but since 0.99.38 the viewer laid the rover projected from the pivot's panorama over it,
+    // which sees only what the pivot sees.  For two hours the file's own rover alone was shown; then (19:24: "It is
+    // very blurry where stereo pairs disagree" - on the deck, where the model and the rover differ by a centimeter or
+    // two and the cables are not in the model, the frames' colors blend into smears) both: the projected rover where
+    // the pivot sees the surface (sharp, as before), the file's own rover where it does not (the sides the Navcams see
+    // from their own places).
     const ownRover = m => !!m && (!m.parts || m.parts.includes('rover'));
     // 0.99.40 (Christian, 19 Nov 2026: "the 3d terrain should preferably use the same texture as the full 3d texture"):
     // the local 3D terrain is the full 3D file's terrain - the same 20 m mesh and its texture, its shell to the horizon
@@ -1238,7 +1250,7 @@ async function show() {
     const skinUrl = skinFile ? new URL(skinFile, base).href : null;
     const surf = sm && color(names[cur.w]) && canSwap(sm, skinUrl) ? swapSkin(skinUrl)       // 0.99.41: the picture alone
       : sm && (color(names[cur.w]) || nmView || dView) ? showRover(sm, { normals: nmView, distance: dView,
-        skin: skinUrl, rover: ownRover(sm) ? null : (vr.rover_surface || scape && scape.rover_surface) })
+        skin: skinUrl, rover: vr.rover_surface || scape && scape.rover_surface, roverOver: ownRover(sm) })
       : showRover(color(names[cur.w]) || (nmView && vr.rover_surface) ? vr.rover_surface : null, { normals: nmView });
     if (whole) { await surf; if (id !== loadId) return; }        // 0.99.40: the 3D file is the picture: "loading" until it is in
     // 0.99.15 (Christian, 17 Nov 2026: "the north direction should be preserved when moving from site to site. I noticed
