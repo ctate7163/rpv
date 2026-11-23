@@ -74,12 +74,20 @@ if (location.hostname === 'ctate7163.github.io' && (/^\/(RPP|MPPP)\/ods(\/|$)/i.
   /* 0.99.1 (Christian, 16 Nov 2026: "make the made by and code text solid black (0.99.39: the code line removed). The Rover Pho Viewer font should
      have blue fill and orange outsides, the same colors as used in the blue circle and the orange on the maps"):
      the credit black, 9 px (11 px, gray until 0.98.29); the title in the welcome view light blue in orange */
-  #credit { position: fixed; left: 10px; bottom: 44px; color: #000; font-size: 9px; font-weight: 400; z-index: 2; }
+  #credit { position: fixed; left: 10px; bottom: 82px; color: #000; font-size: 9px; font-weight: 400; z-index: 2; }
   #credit a { color: #000; }
   #foot { position: fixed; left: 10px; bottom: 10px; right: 170px; color: #bbb; font-size: 12px; z-index: 2; text-shadow: 0 0 4px #000;
           display: flex; flex-direction: column; gap: 2px; pointer-events: none; }
   #ver { color: #999; }
-  #diag { position: fixed; right: 170px; bottom: 10px; color: #888; font-size: 11px; z-index: 2; text-shadow: 0 0 4px #000; text-align: right; }
+  /* 1.0.6, 22 Nov (Christian: "remove those statements. put a frames per second and resolution on the lower left on top
+     of the view version and 3d asset info ... Move the max texture note to the left side of the frame as a forth
+     line"): the lower left, top to bottom - frames per second and the drawing size (#perf); the viewer's version and
+     page date with the RPP version and date the station was made (#ver); the station line (#note); what the device
+     can show (#dev).  The lower-right line (#diag: compressed formats, "16K eye as one texture") is gone */
+  #perf, #dev { color: #888; font-size: 11px; }
+  /* and "Move the ENTER VR box a little higher so that it does not go infront of the the bottom line. Give the box an
+     orange outline" */
+  #VRButton { bottom: 48px !important; border: 1px solid #ff9500 !important; }
   /* 0.99.37 (Christian, 19 Nov 2026: "Move the NEWSo buttons up a little so that the top of N box is level with the top left
      bar"): the N button's top at the bar's buttons' top (8 px; 52 px before); the bar keeps clear of the cross */
   #compass { position: fixed; right: 12px; top: 8px; z-index: 3; display: grid;     /* 0.98.28: upper right (was mid-right) */
@@ -111,9 +119,8 @@ if (location.hostname === 'ctate7163.github.io' && (/^\/(RPP|MPPP)\/ods(\/|$)/i.
   /* 1.0.6, 22 Nov (Christian: "some text overlaps on the smartphone view"): on a narrow screen the station line (#foot)
      and the triangle count (#diag) met in the strip left of the buttons, under the VR button - on a phone the count is
      left out and the station line sits above the VR button, its words wrapped within the strip */
-  body[data-device="phone"] #diag { display: none; }
-  body[data-device="phone"] #foot { bottom: 72px; right: 12px; max-width: calc(100% - 200px); }
-  body[data-device="phone"] #credit { bottom: 150px; }
+  body[data-device="phone"] #foot { bottom: 100px; right: 12px; max-width: calc(100% - 200px); }
+  body[data-device="phone"] #credit { bottom: 190px; }
   #msg { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center; pointer-events: none; z-index: 1;
          font-size: 16px; text-shadow: 0 0 6px #000; }
 </style>
@@ -141,9 +148,8 @@ if (location.hostname === 'ctate7163.github.io' && (/^\/(RPP|MPPP)\/ods(\/|$)/i.
   <button id="nextSt" title="next station (right arrow)" aria-label="next station"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><path d="m9 5 7 7-7 7"/></svg></button>
 </div>
 <div id="msg">loading the list ...</div>
-<div id="foot"><div id="ver"></div><div id="note"></div></div>
+<div id="foot"><div id="perf"></div><div id="ver"></div><div id="note"></div><div id="dev" title="what this device can show"></div></div>
 <div id="credit"></div>
-<div id="diag" title="what this device can show"></div>
 <script type="module">
 import * as THREE from 'three';
 import { VRButton } from './vendor/VRButton.js';
@@ -370,6 +376,7 @@ const ROVER_FRAG = `
 // mast axis (Christian, 18 Nov 2026: "there should be fading where the mesh meets the sky sphere"): into the panorama
 // behind it (fourth mode) or into the surface that runs on to the horizon (fifth mode).  The textures are shown as
 // they are stored (no color conversion), like the rover surface's.
+const SHELL_PANO_M = 90;                                         // 1.0.6: the fifth mode's shell beyond: the panorama
 const MESH_VERT = `
   varying vec2 vUv; varying float vR;
   void main() { vUv = uv; vR = length(position.xz); gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }`;
@@ -622,7 +629,7 @@ async function showRover(rs, opt = {}) {
   if (!rs || !rs.file) { dropRover(); return; }
   const made = [];
   try {
-    let fadeU = null;
+    let fadeU = null, domeOpen = false;
     const over = !!opt.roverOver && !opt.normals && !opt.distance;          // 1.0.6: both rovers, the projected one on top
     const second = opt.rover && opt.rover.file && rs.triangles != null && (over || !opt.roverOver);
     for (const [file, isMain] of [[rs, true]].concat(second ? [[opt.rover, false]] : [])) {
@@ -630,6 +637,7 @@ async function showRover(rs, opt = {}) {
                                             skipRover: isMain && !!second && !over,
                                             skipHorizon: isMain && !!rs.noHorizon, skin: isMain ? opt.skin : null });
       if (got.fade) fadeU = got.fade;
+      if (got.domeLeft) domeOpen = true;
       made.push(...got.made);
       if (id !== roverId) break;
     }
@@ -641,7 +649,8 @@ async function showRover(rs, opt = {}) {
     meshFade = fadeU; fadeBase = fadeU ? fadeU.clone() : null;
     wholeScene = !!rs.whole && made.some(m => m.userData.kind === 'horizon');     // the fifth mode: no panorama behind
     surfState = { file: rs.file, noHorizon: !!rs.noHorizon, drive: !!(rs.drive && rs.whole), shader: opt.normals ? 'n' : opt.distance ? 'd' : 'c', skin: opt.skin || null };
-    if (wholeScene) for (const k in spheres) spheres[k].visible = false;
+    if (wholeScene && !domeOpen) for (const k in spheres) spheres[k].visible = false;   // 1.0.6: the panorama is the sky
+    else if (domeOpen) for (const k in spheres) spheres[k].visible = true;
     anchored = false;
   } catch (e) {
     console.warn('rover surface', e);
@@ -659,7 +668,7 @@ async function loadSurface(rs, opt) {                            // -> {made: [m
     const image = async (i, opt) => { const iv = view(doc.images[i].bufferView); return createImageBitmap(new Blob([new Uint8Array(buf, bin + (iv.byteOffset || 0), iv.byteLength)], { type: doc.images[i].mimeType }), opt); };
     const pr = doc.asset && doc.asset.extras && doc.asset.extras.projection;
     const made = [], shared = new Map();
-    let fadeU = null;
+    let fadeU = null, domeLeft = false;
     if (opt.normals || opt.distance) {                           // 0.99.38: the surfaces' own normals, no textures (0.99.41: or their distance)
       for (const me of doc.meshes) for (const prim of me.primitives) {
         const kind = pr ? 'rover' : (me.name || 'rover');
@@ -686,7 +695,21 @@ async function loadSurface(rs, opt) {                            // -> {made: [m
       if (opt.skipHorizon && !pr && me.name === 'horizon') continue;           // 0.99.40: its shell left out
       const g = new THREE.BufferGeometry();
       g.setAttribute('position', new THREE.BufferAttribute(arr(prim.attributes.POSITION, Float32Array, 3), 3));
-      g.setIndex(new THREE.BufferAttribute(arr(prim.indices, Uint32Array, 1), 1));
+      // 1.0.6, 22 Nov (Christian, Hippo Pools: "skylines to the north clip a nearby hill and have sky artifacts"): the
+      // fifth mode's shell beyond the mesh - the far field (100 and 300 m, which also carries the sky up to 30 deg) and
+      // the dome - was colored from the full 3D texture, where the sky has a few texels per degree and, below the
+      // texture's one skyline circle and on the far field, the frames' own colors with their edges: bands with straight
+      // sides, and hills cut where the shell's skyline is lower than theirs.  The shell's triangles whose corners are
+      // all farther than SHELL_PANO_M are now left out and the panorama behind shows there: its sky is the one smooth
+      // fit and its hills are whole.  (The parallax lost: under 0.6 deg out there for a head 1 m off the pivot.)
+      { let idx = arr(prim.indices, Uint32Array, 1);
+        if (!pr && me.name === 'horizon' && rs.whole) {
+          const P = g.attributes.position.array, lim2 = SHELL_PANO_M ** 2, onDome = k => P[3 * k] ** 2 + P[3 * k + 1] ** 2 + P[3 * k + 2] ** 2 > lim2;
+          const keep = [];
+          for (let q = 0; q < idx.length; q += 3) if (!(onDome(idx[q]) && onDome(idx[q + 1]) && onDome(idx[q + 2]))) keep.push(idx[q], idx[q + 1], idx[q + 2]);
+          if (keep.length < idx.length) { idx = new Uint32Array(keep); domeLeft = true; }
+        }
+        g.setIndex(new THREE.BufferAttribute(idx, 1)); }
       let mat, textures, baseTex = null;
       if (pr) {                                                  // 0.98.14: the model, colored from the pivot
         const col = new THREE.Texture(await image(0));
@@ -748,7 +771,7 @@ async function loadSurface(rs, opt) {                            // -> {made: [m
       m.visible = roverOn || m.userData.kind !== 'rover';
       made.push(m);
     }
-    return { made, fade: fadeU };
+    return { made, fade: fadeU, domeLeft };
   }
 }
 
@@ -819,8 +842,11 @@ const VIEWER_NAME = 'Rover Photogrammetry Viewer (RPV)';
 const RPV_VERSION = '1.0.6';
 // 1.0.6, 22 Nov: the page's own date, shown beside the version - a viewer fix between versions changes only this, so
 // a phone or headset shows whether it has the newest page (a tab left open keeps the page it loaded)
-const RPV_PAGE = '22 Nov 19:40';
-$('ver').textContent = `RPV viewer ${RPV_VERSION} (page of ${RPV_PAGE})`;
+const RPV_PAGE = '22 Nov 23:30';
+function setVer(made) {                                           // made: "rendered with RPP x (date)" of the station shown
+  $('ver').textContent = [`RPV viewer ${RPV_VERSION} (${RPV_PAGE})`, made].filter(Boolean).join('  |  ');
+}
+setVer('');
 const CREDIT = 'Created by Christian Tate at MSSS';   // 0.99.14 (Christian, 17 Nov 2026: 'remove the "for research purposes" phrase')
 // 0.99.39 (Christian, 19 Nov 2026: "remove the code: ... text from the welcome screen"): the credit alone, no link to
 // the repository (in the welcome view and on a screen)
@@ -928,9 +954,12 @@ function solsOf(p) {
   const m = /^Sol(\d+)/.exec(p.id || '');
   return (p.sols && p.sols.length) ? p.sols : (m ? [parseInt(m[1], 10)] : []);
 }
+// 1.0.6, 22 Nov (Christian: "In the RPV list of sites, remove "Sid" from the titles"): "Chal Rocks and Sid" is
+// "Chal Rocks" (the stations published before the site list's change keep the old name in their entry)
+const tidyName = t => (t || '').replace(/\s+and\s+Sid\b/g, '');
 function siteName(p) {                                        // the title without the station label (lists before 0.98.19)
-  const t = (p.site_name || (p.title || '').replace(p.id || '\u0000', '')).replace(/\s+/g, ' ').trim();
-  return t || p.title || p.id || '';
+  const t = tidyName(p.site_name || (p.title || '').replace(p.id || '\u0000', '')).replace(/\s+/g, ' ').trim();
+  return t || tidyName(p.title) || p.id || '';
 }
 function menuLabel(p) {
   if (p.welcome) return p.title || 'Welcome';
@@ -1064,7 +1093,7 @@ function views(p, v) {
 // color"): the labels; the keys stay "dcs color" and "raw color"
 const VIEW_LABEL = { 'normal': 'normal map', 'range log': 'distance map', 'range linear': 'distance map linear',
                      'standard': 'standard color', 'enhanced local': 'enhanced color', 'enhanced': 'enhanced (global)',
-                     'dcs color': 'decorrelation stretch', 'raw color': 'original color' };
+                     'dcs color': 'decor. stretch', 'raw color': 'original color' };   // 1.0.6, 22 Nov: "Abreviate "decorrelation stretch" to "decor. stretch"
 const viewLabel = k => VIEW_LABEL[k] || k;
 
 // 0.99.40 (Christian, 19 Nov 2026: "change the mode banner to be just for the terrain. the terrain can be terrain stereo,
@@ -1186,11 +1215,13 @@ async function loadCenter() {
     msg(`could not load ${url}: ${e.message || e}`);
   }
 }
+const dayOf = iso => { const d = new Date(iso + 'T12:00:00Z'); return isNaN(d) ? iso : d.toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric', timeZone: 'UTC' }); };
 var noteParts = null;                                            // [station, its note, variant, size, rendered with] (var: setEye may ask first)
 function setNote() {
   if (!noteParts) return;
   const size = screenEye === 'center' && centerSize ? `${centerSize} (center)` : noteParts[3];
-  $('note').textContent = [noteParts[0], noteParts[1], noteParts[2], size, noteParts[4]].filter(Boolean).join('  |  ');
+  $('note').textContent = [noteParts[0], noteParts[1], noteParts[2], size].filter(Boolean).join('  |  ');
+  setVer(noteParts[4]);
 }
 
 async function show() {
@@ -1269,8 +1300,8 @@ async function show() {
     $('home').classList.toggle('athome', !!p.welcome);
     if (faceAfterLoad) { faceAz(faceAfterLoad); faceAfterLoad = null; }
     if (infoPanel.visible) drawInfo();
-    noteParts = [p.title || p.id, p.note, modeLabel(), whole ? `${(vr.station_mesh.triangles || 0).toLocaleString()} triangles` : size,
-                 (p.rpp || p.mppp) ? `rendered with RPP ${p.rpp || p.mppp}` : ''];
+    noteParts = [tidyName(p.title) || p.id, p.note, modeLabel(), whole ? `${(vr.station_mesh.triangles || 0).toLocaleString()} triangles` : size,
+                 (p.rpp || p.mppp) ? `rendered with RPP ${p.rpp || p.mppp}` + (p.published ? ` (${dayOf(p.published)})` : '') : ''];
     setNote();
     msg('');
     prefetchNeighbors();                                         // 1.0.6: the next and previous stations' 3D files
@@ -1446,7 +1477,8 @@ let yaw = 0, pitch = 0, drag = null;
 // P turns it off and on; ?still=1 opens with it off.  Only where there is a 3D surface to see it on.
 // 0.99.38 (Christian, 19 Nov 2026: "remove the swaying"): no sway.  0.99.39 (Christian: "the curser should move 5 cm"):
 // the pointer moves the eye by up to 5 cm again (2 cm in 0.99.38)
-const NECK_M = 0.15, HOVER_M = 0.05;
+// 1.0.6, 22 Nov (Christian: "Double the magnitude of the pc browser pivot motion following the curser"): 10 cm
+const NECK_M = 0.15, HOVER_M = 0.10;
 let motionOn = new URLSearchParams(location.search).get('still') !== '1';
 const hover = new THREE.Vector2(), hoverNow = new THREE.Vector2(), eyeMove = new THREE.Vector3();
 const eyeFwd = new THREE.Vector3(), eyeRight = new THREE.Vector3(), eyeUp = new THREE.Vector3();
@@ -1687,7 +1719,18 @@ function holdNearPivot() {
   const L = offHead.length();
   if (L > lim) fixed.position.addScaledVector(offHead, (L - lim) / L);
 }
+// 1.0.6, 22 Nov: frames per second and the drawing size, on the top line of the lower left, twice a second
+let perfN = 0, perfT0 = performance.now();
+function perfTick() {
+  perfN++;
+  const t = performance.now();
+  if (t - perfT0 < 500) return;
+  const gl = renderer.getContext();
+  $('perf').textContent = `${Math.round(perfN * 1000 / (t - perfT0))} fps  |  ${gl.drawingBufferWidth} x ${gl.drawingBufferHeight}`;
+  perfN = 0; perfT0 = t;
+}
 renderer.setAnimationLoop(() => {
+  perfTick();
   const dt = Math.min(clock.getDelta(), 0.1);
   lookByKeys(dt);
   turnMarkText();
@@ -1731,8 +1774,7 @@ function diagnostics() {
               bc7: ext('EXT_texture_compression_bptc'), s3tc: ext('WEBGL_compressed_texture_s3tc'),
               anisotropy: renderer.capabilities.getMaxAnisotropy(), memoryGB: navigator.deviceMemory || null, xr: !!navigator.xr };
   const fmt = ['astc', 'etc2', 'bc7', 's3tc'].filter(k => d[k]).join(' ') || 'none';
-  $('diag').textContent = `max texture ${d.maxTexture} | compressed: ${fmt}` + (d.memoryGB ? ` | memory >= ${d.memoryGB} GB` : '') +
-    ` | 16K eye as one texture: ${d.maxTexture >= 16384 ? 'yes' : 'no'}`;
+  $('dev').textContent = `max texture ${d.maxTexture}` + (d.memoryGB ? `  |  memory >= ${d.memoryGB} GB` : '');
   console.log('RPP viewer diagnostics', JSON.stringify(d));
   window.rppDiagnostics = d;
   // 0.98.28: what the page shows, for checks (read only): station, variant, view, and the azimuth / elevation looked at on a screen
