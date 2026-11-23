@@ -88,6 +88,10 @@ if (location.hostname === 'ctate7163.github.io' && (/^\/(RPP|MPPP)\/ods(\/|$)/i.
   /* and "Move the ENTER VR box a little higher so that it does not go infront of the the bottom line. Give the box an
      orange outline" */
   #VRButton { bottom: 48px !important; border: 1px solid #ff9500 !important; }
+  /* 1.0.6, 23 Nov (Christian: "Move the enter vr box up so that it's bottom is at the same level as the driving modes
+     icon bottom"): the steering wheel's bottom is the bar's (12 px) + a button (40 px; 44 on a phone) + 6 px */
+  #VRButton { bottom: 58px !important; }
+  body[data-device="phone"] #VRButton { bottom: 62px !important; }
   /* 0.99.37 (Christian, 19 Nov 2026: "Move the NEWSo buttons up a little so that the top of N box is level with the top left
      bar"): the N button's top at the bar's buttons' top (8 px; 52 px before); the bar keeps clear of the cross */
   #compass { position: fixed; right: 12px; top: 8px; z-index: 3; display: grid;     /* 0.98.28: upper right (was mid-right) */
@@ -119,8 +123,9 @@ if (location.hostname === 'ctate7163.github.io' && (/^\/(RPP|MPPP)\/ods(\/|$)/i.
   /* 1.0.6, 22 Nov (Christian: "some text overlaps on the smartphone view"): on a narrow screen the station line (#foot)
      and the triangle count (#diag) met in the strip left of the buttons, under the VR button - on a phone the count is
      left out and the station line sits above the VR button, its words wrapped within the strip */
-  body[data-device="phone"] #foot { bottom: 100px; right: 12px; max-width: calc(100% - 200px); }
-  body[data-device="phone"] #credit { bottom: 190px; }
+  /* 1.0.6, 23 Nov (Christian: "Move the lower left text down to the bottom. It can be behind the enter vr button") */
+  body[data-device="phone"] #foot { bottom: 10px; right: 12px; max-width: calc(100% - 200px); }
+  body[data-device="phone"] #credit { bottom: 100px; }
   #msg { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center; pointer-events: none; z-index: 1;
          font-size: 16px; text-shadow: 0 0 6px #000; }
 </style>
@@ -358,13 +363,19 @@ const ROVER_FRAG = `
     float vt = (row - rows.x) / rows.y;
     float dux = dFdx(ua), duy = dFdy(ua);
     dux -= floor(dux + 0.5); duy -= floor(duy + 0.5);
-    vec3 c = min(texture2DGradEXT(colorMap, vec2(u, vt), vec2(dux, dFdx(vt)), vec2(duy, dFdy(vt))).rgb * gain, 1.0);
+    vec3 c0 = texture2DGradEXT(colorMap, vec2(u, vt), vec2(dux, dFdx(vt)), vec2(duy, dFdy(vt))).rgb;
+    vec3 c = min(c0 * gain, 1.0);
     vec2 q = vec2((fract(ua) * panoSize.x - 0.5 - rangeOffset) / rangeStep, (row - 0.5 - rows.x - rangeOffset) / rangeStep);
     vec2 i0 = floor(q), f = q - i0;
     float lit = mix(mix(seen(i0, dist), seen(i0 + vec2(1.0, 0.0), dist), f.x),
                     mix(seen(i0 + vec2(0.0, 1.0), dist), seen(i0 + vec2(1.0, 1.0), dist), f.x), f.y);
     if (overOwn > 0.5) {                 // 1.0.6: over the 3D file's own rover - only where the pivot sees it
       if (lit < 0.5) discard;
+      // 1.0.6, 23 Nov (Christian, Sol1968_Z34: "The marble Mt zcam rover is mostly gray"): a Mastcam-Z panorama has no
+      // frames below its pan, and its rover rows are the flat fill gray (grey_rgb, 143) - there the file's own rover
+      // (the Navcam run's, textured from its frames) shows instead
+      vec3 dg = abs(c0 - gray);
+      if (max(dg.r, max(dg.g, dg.b)) < 0.018) discard;
       gl_FragColor = vec4(c, 1.0);
       return;
     }
@@ -828,7 +839,7 @@ const VIEWER_NAME = 'Rover Photogrammetry Viewer (RPV)';
 const RPV_VERSION = '1.0.6';
 // 1.0.6, 22 Nov: the page's own date, shown beside the version - a viewer fix between versions changes only this, so
 // a phone or headset shows whether it has the newest page (a tab left open keeps the page it loaded)
-const RPV_PAGE = '23 Nov 07:40';
+const RPV_PAGE = '23 Nov 10:30';
 function setVer(made) {                                           // made: "rendered with RPP x (date)" of the station shown
   $('ver').textContent = [`RPV viewer ${RPV_VERSION} (${RPV_PAGE})`, made].filter(Boolean).join('  |  ');
 }
@@ -1512,9 +1523,15 @@ document.documentElement.addEventListener('mouseleave', () => hover.set(0, 0));
 const TILT_M = 0.16, TILT_FULL_DEG = 15, TILT_RECENTER_S = 6;
 const tiltSign = (() => { const v = new URLSearchParams(location.search).get('tilt'); return v == null ? 1 : Number(v) || 0; })();
 let eyeReach = HOVER_M;
-const tilt = { base: null, t: 0, on: false };
+const tilt = { base: null, t: 0, on: false, state: '', events: 0 };
+// 1.0.6, 23 Nov (Christian: "The viewers smartphone tilt feature is turned off. What happened there?"): the tilt's
+// state on the device line at the lower left of a phone - on, waiting for a tap (iOS asks), not allowed, no sensor
+// (the browser sends no angles), or off by the link - so a phone shows why it does not move
+function tiltState(t) { tilt.state = t; if (window.rppDiagnostics) showDev(window.rppDiagnostics); }
 function onTilt(e) {
-  if (e.beta == null || e.gamma == null || !tiltSign) return;
+  if (e.beta == null || e.gamma == null) { if (tilt.state !== 'tilt: no sensor') tiltState('tilt: no sensor'); return; }
+  if (!tilt.events++) tiltState('tilt on (only in terrain 3D)');
+  if (!tiltSign) return;
   const ang = ((screen.orientation && screen.orientation.angle) ?? window.orientation ?? 0) % 360;
   // the tilt about the screen's up axis (x: the eye right) and about its right axis (y: the eye up), by the screen's turn
   let x = e.gamma, y = -e.beta;
@@ -1530,11 +1547,18 @@ function onTilt(e) {
   hover.set(tiltSign * c(x - tilt.base.x), tiltSign * c(y - tilt.base.y));
 }
 function startTilt() {
-  if (tilt.on || DEVICE !== 'phone' || !tiltSign || typeof DeviceOrientationEvent === 'undefined') return;
-  const go = () => { tilt.on = true; window.addEventListener('deviceorientation', onTilt, { passive: true }); };
-  if (typeof DeviceOrientationEvent.requestPermission === 'function')       // iOS 13+: only from a touch
-    DeviceOrientationEvent.requestPermission().then(r => { if (r === 'granted') go(); }).catch(() => {});
-  else go();
+  if (tilt.on || DEVICE !== 'phone') return;
+  if (!tiltSign) { tiltState('tilt off (link)'); return; }
+  if (typeof DeviceOrientationEvent === 'undefined') { tiltState('tilt: no sensor'); return; }
+  const go = () => {
+    tilt.on = true; window.addEventListener('deviceorientation', onTilt, { passive: true });
+    setTimeout(() => { if (!tilt.events) tiltState('tilt: no sensor'); }, 3000);
+  };
+  if (typeof DeviceOrientationEvent.requestPermission === 'function') {    // iOS 13+: only from a touch
+    if (!tilt.state) tiltState('tilt: tap to allow');
+    DeviceOrientationEvent.requestPermission().then(r => { if (r === 'granted') go(); else tiltState('tilt not allowed (quit and reopen Safari)'); })
+      .catch(() => {});
+  } else go();
 }
 if (DEVICE === 'phone') {
   eyeReach = TILT_M;
@@ -1778,6 +1802,10 @@ renderer.setAnimationLoop(() => {
 });
 
 // ---------------------------------------------------------------- what this device can show (0.97.4)
+function showDev(d) {
+  $('dev').textContent = `max texture ${d.maxTexture}` + (d.memoryGB ? `  |  memory >= ${d.memoryGB} GB` : '') +
+                         (DEVICE === 'phone' && tilt.state ? `  |  ${tilt.state}` : '');
+}
 function diagnostics() {
   const gl = renderer.getContext();
   const ext = n => !!gl.getExtension(n);
@@ -1786,7 +1814,7 @@ function diagnostics() {
               bc7: ext('EXT_texture_compression_bptc'), s3tc: ext('WEBGL_compressed_texture_s3tc'),
               anisotropy: renderer.capabilities.getMaxAnisotropy(), memoryGB: navigator.deviceMemory || null, xr: !!navigator.xr };
   const fmt = ['astc', 'etc2', 'bc7', 's3tc'].filter(k => d[k]).join(' ') || 'none';
-  $('dev').textContent = `max texture ${d.maxTexture}` + (d.memoryGB ? `  |  memory >= ${d.memoryGB} GB` : '');
+  showDev(d);
   console.log('RPP viewer diagnostics', JSON.stringify(d));
   window.rppDiagnostics = d;
   // 0.98.28: what the page shows, for checks (read only): station, variant, view, and the azimuth / elevation looked at on a screen
