@@ -839,7 +839,7 @@ const VIEWER_NAME = 'Rover Photogrammetry Viewer (RPV)';
 const RPV_VERSION = '1.0.6';
 // 1.0.6, 22 Nov: the page's own date, shown beside the version - a viewer fix between versions changes only this, so
 // a phone or headset shows whether it has the newest page (a tab left open keeps the page it loaded)
-const RPV_PAGE = '23 Nov 10:30';
+const RPV_PAGE = '23 Nov 13:45';
 function setVer(made) {                                           // made: "rendered with RPP x (date)" of the station shown
   $('ver').textContent = [`RPV viewer ${RPV_VERSION} (${RPV_PAGE})`, made].filter(Boolean).join('  |  ');
 }
@@ -1071,6 +1071,18 @@ const startAz = p => p.yaw_deg != null ? p.yaw_deg : (p.welcome ? WELCOME_AZ_DEG
 const maxTex = renderer.capabilities.maxTextureSize;
 
 function variants(p) { return p.variants || []; }
+// 1.0.6, 23 Nov (Christian, Sol1968_Z34: "It's updated now, but the rover is blurry"): a Mastcam-Z station's own rover
+// is its Navcam run's, textured from all the frames (blurry where they disagree), and its panorama has no frames of the
+// rover - so its rover projected from the pivot is the Navcam station's at the same place (same map position, same RPP):
+// the same model about the same pivot (Sol1965 and Sol1968_Z34: every vertex the same), the Navcam pixels sharp
+function navcamRover(p, vr) {
+  if (!p || !/_Z34$/.test(p.id || '') || !p.map) return null;
+  const q = panos.find(o => o !== p && !/_Z34$/.test(o.id || '') && o.map && Math.abs(o.map[0] - p.map[0]) < 0.05 &&
+                            Math.abs(o.map[1] - p.map[1]) < 0.05 && (o.rpp || o.mppp) === (p.rpp || p.mppp));
+  if (!q) return null;
+  const w = variants(q).find(v => v.key === (vr && vr.key) && v.rover_surface) || variants(q).find(v => v.rover_surface);
+  return w ? w.rover_surface : null;
+}
 function atLeast(v, w) {                         // version v (e.g. "1.0.6", "0.99.53", "1.0.0rc1") >= w
   const a = String(v || '0').split(/[.]/).map(x => parseInt(x, 10) || 0), b = w.split('.').map(Number);
   for (let i = 0; i < 3; i++) if ((a[i] || 0) !== b[i]) return (a[i] || 0) > b[i];
@@ -1304,8 +1316,8 @@ async function show() {
     const skinUrl = skinFile ? new URL(skinFile, base).href : null;
     const surf = sm && color(names[cur.w]) && canSwap(sm, skinUrl) ? swapSkin(skinUrl)       // 0.99.41: the picture alone
       : sm && (color(names[cur.w]) || nmView || dView) ? showRover(sm, { normals: nmView, distance: dView,
-        skin: skinUrl, rover: vr.rover_surface || scape && scape.rover_surface, roverOver: ownRover(sm) })
-      : showRover(color(names[cur.w]) || (nmView && vr.rover_surface) ? vr.rover_surface : null, { normals: nmView });
+        skin: skinUrl, rover: navcamRover(p, vr) || vr.rover_surface || scape && scape.rover_surface, roverOver: ownRover(sm) })
+      : showRover(color(names[cur.w]) || (nmView && vr.rover_surface) ? (vr.rover_surface && navcamRover(p, vr) || vr.rover_surface) : null, { normals: nmView });   // 1.0.6: a Mastcam-Z stereo view's rover from its Navcam station
     if (whole) { await surf; if (id !== loadId) return; }        // 0.99.40: the 3D file is the picture: "loading" until it is in
     // 0.99.15 (Christian, 17 Nov 2026: "the north direction should be preserved when moving from site to site. I noticed
     // this looks rotated for the welcome screen compared to the van zyl site"): until now every panorama set its own start
