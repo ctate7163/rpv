@@ -347,16 +347,31 @@ function mastOnMap(p) {                                          // m east and n
   return [p.map[0] + MAST_FWD_RIGHT_M[0] * s + MAST_FWD_RIGHT_M[1] * c, p.map[1] + MAST_FWD_RIGHT_M[0] * c - MAST_FWD_RIGHT_M[1] * s];
 }
 const discRay = new THREE.Raycaster(), discFrom = new THREE.Vector3(), discDir = new THREE.Vector3();
-function terrainY(x, z) {                                        // the terrain's height (in `world`) at x east, z south; or null
+// 1.0.6, 24 Nov (Christian: "Disks should always be tilted with the terrain normal. So a disk on the horizon should be
+// flattened and not appear as a circle. The disk should move up and down relative to the height of the next station.
+// This relative placement should also work in driving mode"): a disc lies on the ground - along the terrain's normal
+// where this station's 3D surface is under it, level elsewhere (no longer turned to the eye); its height is the
+// terrain's there, else the other station's height against this one's ("elev" in panos.json, m up, when both have it;
+// a far disc drawn nearer keeps its elevation angle), else this station's ground level; and with a 3D terrain up the
+// discs hang in the ground's group, which the drive moves and turns under the rover
+function terrainAt(x, z) {                                       // this station's terrain at x east, z south: { y, n } or null
   const parts = roverParts.filter(m => m.userData.kind === 'terrain' && m.parent);
-  if (!parts.length) return null;
   const home = otherDiscs.parent || world;
-  home.updateMatrixWorld(true); fixed.updateMatrixWorld(true);
+  if (!parts.length || home !== groundGroup) return null;
+  scene.updateMatrixWorld(true);
   for (const [y0, dy] of [[200, -1], [-200, 1]]) {               // from above; from below if the faces are one-sided
     home.localToWorld(discFrom.set(x, y0, z)); discDir.set(0, dy, 0);
     discRay.set(discFrom, discDir); discRay.far = 400;
     const hit = discRay.intersectObjects(parts, false)[0];
-    if (hit) return home.worldToLocal(hit.point.clone()).y;
+    if (!hit) continue;
+    const n = new THREE.Vector3(0, 1, 0);
+    if (hit.face) {
+      n.copy(hit.face.normal).applyNormalMatrix(new THREE.Matrix3().getNormalMatrix(hit.object.matrixWorld))
+       .applyQuaternion(home.getWorldQuaternion(new THREE.Quaternion()).invert()).normalize();
+      if (n.y < 0) n.negate();
+      if (n.y < 0.5) n.set(0, 1, 0);                             // a cliff face or a bad triangle: level
+    }
+    return { y: home.worldToLocal(hit.point.clone()).y, n };
   }
   return null;
 }
@@ -369,12 +384,12 @@ function placeDisc(from, to) {
   const s = d <= 25 ? d : 25 * (1 + Math.log(d / 25)), k = s / d;
   const m = new THREE.Mesh(discGeo, discMat);
   m.renderOrder = 2; m.frustumCulled = false;
-  m.position.set(de * k, -markDepth, -dn * k);                   // x east, y up, z south
-  if (d <= 25) { const y = terrainY(de, -dn); if (y != null) m.position.y = y + 0.02; }
+  const dh = isFinite(from.elev) && isFinite(to.elev) && from.elev != null && to.elev != null ? to.elev - from.elev : 0;
+  m.position.set(de * k, -markDepth + dh * k, -dn * k);          // x east, y up, z south
+  const n = new THREE.Vector3(0, 1, 0);
+  if (d <= 25) { const t = terrainAt(de, -dn); if (t) { m.position.y = t.y + 0.02; n.copy(t.n); } }
   m.scale.setScalar(markRadius * Math.max(1, s / 12));
-  const up = new THREE.Vector3(0, 1, 0), eye = m.position.clone().negate().normalize();
-  const t = THREE.MathUtils.clamp((s - 8) / 40, 0, 1);
-  m.lookAt(m.position.clone().add(up.lerp(eye, t).normalize()));
+  m.quaternion.setFromUnitVectors(new THREE.Vector3(0, 0, 1), n);
   m.userData.station = to.id;
   return m;
 }
@@ -946,7 +961,7 @@ const VIEWER_NAME = 'Rover Photogrammetry Viewer (RPV)';
 const RPV_VERSION = '1.0.6';
 // 1.0.6, 22 Nov: the page's own date, shown beside the version - a viewer fix between versions changes only this, so
 // a phone or headset shows whether it has the newest page (a tab left open keeps the page it loaded)
-const RPV_PAGE = '23 Nov 21:15';
+const RPV_PAGE = '24 Nov 08:00';
 function setVer(made) {                                           // made: "rendered with RPP x (date)" of the station shown
   $('ver').textContent = [`RPV viewer ${RPV_VERSION} (${RPV_PAGE})`, made].filter(Boolean).join('  |  ');
 }
@@ -1384,7 +1399,7 @@ function afterSwitch(p, vr) {
   const key = (p.id || '') + '|' + ((vr && vr.key) || '');
   if (key !== shownKey) { anchored = false; shownKey = key; }
   const home = vr && vr.station_mesh ? fixed : world;
-  home.add(markDisc); home.add(otherDiscs);
+  home.add(markDisc); (home === fixed ? groundGroup : world).add(otherDiscs);   // 24 Nov: the discs with the driven ground
   shownStation = p;
   if (discsAll) showDiscs(p); else clearDiscs();
 }
