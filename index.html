@@ -350,12 +350,13 @@ const discRay = new THREE.Raycaster(), discFrom = new THREE.Vector3(), discDir =
 function terrainY(x, z) {                                        // the terrain's height (in `world`) at x east, z south; or null
   const parts = roverParts.filter(m => m.userData.kind === 'terrain' && m.parent);
   if (!parts.length) return null;
-  world.updateMatrixWorld(true); fixed.updateMatrixWorld(true);
+  const home = otherDiscs.parent || world;
+  home.updateMatrixWorld(true); fixed.updateMatrixWorld(true);
   for (const [y0, dy] of [[200, -1], [-200, 1]]) {               // from above; from below if the faces are one-sided
-    world.localToWorld(discFrom.set(x, y0, z)); discDir.set(0, dy, 0);
+    home.localToWorld(discFrom.set(x, y0, z)); discDir.set(0, dy, 0);
     discRay.set(discFrom, discDir); discRay.far = 400;
     const hit = discRay.intersectObjects(parts, false)[0];
-    if (hit) return world.worldToLocal(hit.point.clone()).y;
+    if (hit) return home.worldToLocal(hit.point.clone()).y;
   }
   return null;
 }
@@ -766,7 +767,6 @@ async function showRover(rs, opt = {}) {
     wholeScene = !!rs.whole && made.some(m => m.userData.kind === 'horizon');     // the fifth mode: no panorama behind
     surfState = { file: rs.file, noHorizon: !!rs.noHorizon, drive: !!(rs.drive && rs.whole), shader: opt.normals ? 'n' : opt.distance ? 'd' : 'c', skin: opt.skin || null };
     if (wholeScene) for (const k in spheres) spheres[k].visible = false;   // the fifth mode: its shell holds the whole view
-    anchored = false;
   } catch (e) {
     console.warn('rover surface', e);
     if (id === roverId) { for (const m of made) { m.geometry.dispose(); for (const o of m.userData.textures) o.dispose(); m.material.dispose(); } dropRover(); }
@@ -946,7 +946,7 @@ const VIEWER_NAME = 'Rover Photogrammetry Viewer (RPV)';
 const RPV_VERSION = '1.0.6';
 // 1.0.6, 22 Nov: the page's own date, shown beside the version - a viewer fix between versions changes only this, so
 // a phone or headset shows whether it has the newest page (a tab left open keeps the page it loaded)
-const RPV_PAGE = '23 Nov 20:10';
+const RPV_PAGE = '23 Nov 21:15';
 function setVer(made) {                                           // made: "rendered with RPP x (date)" of the station shown
   $('ver').textContent = [`RPV viewer ${RPV_VERSION} (${RPV_PAGE})`, made].filter(Boolean).join('  |  ');
 }
@@ -1076,7 +1076,9 @@ function infoLines() {
   const sols = solsOf(p);
   const sol = sols.length ? (sols.length > 1 ? `Sols ${sols[0]}-${sols[sols.length - 1]}` : `Sol ${sols[0]}`) : '';   // 0.98.28: capitalized
   const sd = /S(\d{3})D(\d{4})/.exec(p.id || '');
-  return [p.welcome ? (p.site_name || '') : siteName(p), sol,
+  // 1.0.6, 23 Nov 22:54 (Christian: "The info subtitle should say if the images are navcam or mastcam-z plus navcam")
+  const cams = p.welcome ? '' : (/_Z\d+$/.test(p.id || '') ? 'Mastcam-Z + Navcam images' : 'Navcam images');
+  return [p.welcome ? (p.site_name || '') : siteName(p), [sol, cams].filter(Boolean).join('  |  '),
           p.welcome || !sd ? '' : `Site ${parseInt(sd[1], 10)}, Drive ${parseInt(sd[2], 10)}`];
 }
 function drawInfo() {
@@ -1144,6 +1146,7 @@ function drawInfo() {
                            new THREE.MeshBasicMaterial({ map: t, transparent: true, depthTest: false, depthWrite: false, side: THREE.DoubleSide }));
   m.renderOrder = 5; m.frustumCulled = false;
   infoPanel.add(m);
+  infoPanel.userData.aspect = Hh / W;
 }
 const fwd = new THREE.Vector3();
 const INFO_TILT_RAD = -1.2;      // 0.98.14 (Christian: "Tilt the info window back further so that it is easier to read from the
@@ -1154,7 +1157,7 @@ function toggleInfo() {
   drawInfo();
   if (renderer.xr.isPresenting && leftGrip) {                    // on the left hand: 19 cm wide (16 until 0.98.14), above the controller
     leftGrip.add(infoPanel);
-    infoPanel.position.set(0, 0.10, -0.07); infoPanel.rotation.set(INFO_TILT_RAD, 0, 0); infoPanel.scale.setScalar(0.19);
+    infoPanel.position.set(0, 0.10, -0.07); infoPanel.rotation.set(INFO_TILT_RAD, 0, 0); infoPanel.scale.setScalar(0.30);   // 1.0.6, 23 Nov: 0.19 until then
   } else {
     scene.add(infoPanel);
     const cam = renderer.xr.isPresenting ? renderer.xr.getCamera() : camera;
@@ -1166,7 +1169,14 @@ function toggleInfo() {
     const at = infoPanel.position.clone();
     infoPanel.position.x += 2 * Math.cos(el) * fwd.x / hlen; infoPanel.position.z += 2 * Math.cos(el) * fwd.z / hlen;
     infoPanel.position.y += 2 * Math.sin(el);
-    infoPanel.scale.setScalar(1.0);
+    // 1.0.6, 23 Nov 22:54 (Christian: "The info map should be large"): on a screen the page fills 92 % of the view's
+    // width or 80 % of its height, whichever comes first (1 m wide at 2 m until then); in a headset 1.6 m wide
+    let k = 1.6;
+    if (!renderer.xr.isPresenting) {
+      const vh = 2 * 2 * Math.tan(THREE.MathUtils.degToRad(camera.fov) / 2), vw = vh * camera.aspect;
+      k = Math.max(1.0, Math.min(0.92 * vw, 0.8 * vh / (infoPanel.userData.aspect || 0.86)));
+    }
+    infoPanel.scale.setScalar(k);
     infoPanel.lookAt(at);
   }
   infoPanel.visible = true;
@@ -1366,7 +1376,15 @@ function setNote() {
 }
 
 let shownStation = null;                                         // 1.0.6, 23 Nov: the station whose surroundings are up
-function afterSwitch(p) {
+// 1.0.6, 23 Nov 22:54 (Christian: "Fix the disk to the terrain"): with a 3D terrain up the mark and the other
+// stations' discs hang in `fixed` with it (they followed the eyes before, sliding on the terrain when the eye moved);
+// over a stereo panorama, which follows the eyes, they stay in `world`
+let shownKey = '';
+function afterSwitch(p, vr) {
+  const key = (p.id || '') + '|' + ((vr && vr.key) || '');
+  if (key !== shownKey) { anchored = false; shownKey = key; }
+  const home = vr && vr.station_mesh ? fixed : world;
+  home.add(markDisc); home.add(otherDiscs);
   shownStation = p;
   if (discsAll) showDiscs(p); else clearDiscs();
 }
@@ -1382,7 +1400,9 @@ async function show() {
   const vr = variants(p)[cur.v], file = vr && (vr.views[fileView(names[cur.w])] || vr.views[names[cur.w]]);
   if (!file) { msg('no image for this choice'); return; }
   history.replaceState(null, '', hashOf(p, vr));
-  anchored = false;                                             // 0.98.30: the 3D rover set again at the eyes' center
+  // 1.0.6, 23 Nov 22:54 (Christian: "don't update the center every time the skin changes, but do recenter after every
+  // change of site"): the 3D surfaces are set again at the eyes' center only when the station or its terrain mode
+  // changes (afterSwitch) - since 0.99.41 every change of view did it
   // 0.99.41 (Christian, 19 Nov 2026: "when switching skins in vr mode, bring the view back to the pivot without changing
   // the look direction"): so a change of view - a skin too, which loads nothing - puts the 3D surfaces back with their
   // pivot at the eyes in a headset, the heading as it was (only the position is set: see the render loop)
@@ -1404,7 +1424,7 @@ async function show() {
       setGain(p, names[cur.w]);
       size = `${bmp.width} x ${bmp.height}`;
     }
-    if (!whole) { const put = await markReady; if (id !== loadId) return; put(); afterSwitch(p); }   // with the panorama
+    if (!whole) { const put = await markReady; if (id !== loadId) return; put(); afterSwitch(p, vr); }   // with the panorama
     // 0.99.26: the fourth mode, "3D terrain and rover" - the station mesh (terrain within 20 m - 10 m until 0.99.39 -
     // and the rover, textured: rpp.ibr.station_mesh) in front of the terrain-only panorama, its backdrop beyond
     // 0.99.38: in the normal-map view a 3D mode draws its surfaces with their own normals; the station mesh's rover is
@@ -1436,7 +1456,7 @@ async function show() {
     if (whole) {                                                 // 0.99.40: the 3D file is the picture: "loading" until it is in
       await surf; if (id !== loadId) return;
       const put = await markReady; if (id !== loadId) return;
-      put(); afterSwitch(p);                                       // 1.0.6: the mark and discs with the surfaces, one frame
+      put(); afterSwitch(p, vr);                                   // 1.0.6: the mark and discs with the surfaces, one frame
     }
     // 0.99.15 (Christian, 17 Nov 2026: "the north direction should be preserved when moving from site to site. I noticed
     // this looks rotated for the welcome screen compared to the van zyl site"): until now every panorama set its own start
