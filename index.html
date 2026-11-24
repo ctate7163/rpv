@@ -334,14 +334,42 @@ otherDiscs.visible = false;
 world.add(otherDiscs);
 const discGeo = new THREE.CircleGeometry(1, 48);
 const discMat = new THREE.MeshBasicMaterial({ color: 0xb0d4ee, transparent: true, opacity: 0.85, depthTest: false, depthWrite: false, side: THREE.DoubleSide });
+// 1.0.6, 23 Nov 21:22 (Christian: "The blue disk of the loading station should be where the next blue disk will be,
+// not at the center of the rover, but under the mast and on the terrain"): "map" is the rover's origin (between the
+// middle wheels); a station's mark is under its mast, MAST_FWD_RIGHT_M ahead and to the right of that
+// (rpp.ibr.rover_model.MAST_P_XY_RNAV_M) along the rover's heading there - so each end gets its own mast offset; and a
+// disc at its true distance sits on this station's terrain (a ray down onto the 3D surface) where there is one
+const MAST_FWD_RIGHT_M = [0.8012, 0.5569];
+function mastOnMap(p) {                                          // m east and north
+  const h = roverForward(p);
+  if (h == null) return p.map;
+  const a = THREE.MathUtils.degToRad(h), s = Math.sin(a), c = Math.cos(a);
+  return [p.map[0] + MAST_FWD_RIGHT_M[0] * s + MAST_FWD_RIGHT_M[1] * c, p.map[1] + MAST_FWD_RIGHT_M[0] * c - MAST_FWD_RIGHT_M[1] * s];
+}
+const discRay = new THREE.Raycaster(), discFrom = new THREE.Vector3(), discDir = new THREE.Vector3();
+function terrainY(x, z) {                                        // the terrain's height (in `world`) at x east, z south; or null
+  const parts = roverParts.filter(m => m.userData.kind === 'terrain' && m.parent);
+  if (!parts.length) return null;
+  world.updateMatrixWorld(true); fixed.updateMatrixWorld(true);
+  for (const [y0, dy] of [[200, -1], [-200, 1]]) {               // from above; from below if the faces are one-sided
+    world.localToWorld(discFrom.set(x, y0, z)); discDir.set(0, dy, 0);
+    discRay.set(discFrom, discDir); discRay.far = 400;
+    const hit = discRay.intersectObjects(parts, false)[0];
+    if (hit) return world.worldToLocal(hit.point.clone()).y;
+  }
+  return null;
+}
 function placeDisc(from, to) {
   if (!from || !to || !from.map || !to.map) return null;
-  const de = to.map[0] - from.map[0], dn = to.map[1] - from.map[1], d = Math.hypot(de, dn);
-  if (d < 0.5) return null;                                      // the same place (a Mastcam-Z station and its Navcams)
+  if (Math.hypot(to.map[0] - from.map[0], to.map[1] - from.map[1]) < 0.5) return null;   // the same place
+  const a = mastOnMap(from), b = mastOnMap(to);
+  const de = b[0] - a[0], dn = b[1] - a[1], d = Math.hypot(de, dn);
+  if (d < 0.05) return null;
   const s = d <= 25 ? d : 25 * (1 + Math.log(d / 25)), k = s / d;
   const m = new THREE.Mesh(discGeo, discMat);
   m.renderOrder = 2; m.frustumCulled = false;
   m.position.set(de * k, -markDepth, -dn * k);                   // x east, y up, z south
+  if (d <= 25) { const y = terrainY(de, -dn); if (y != null) m.position.y = y + 0.02; }
   m.scale.setScalar(markRadius * Math.max(1, s / 12));
   const up = new THREE.Vector3(0, 1, 0), eye = m.position.clone().negate().normalize();
   const t = THREE.MathUtils.clamp((s - 8) / 40, 0, 1);
@@ -353,7 +381,9 @@ function clearDiscs() { while (otherDiscs.children.length) otherDiscs.remove(oth
 let discsAll = false;
 function showDiscs(from, only) {                                 // only: the one station being opened; else all
   clearDiscs();
-  for (const q of only ? [only] : panos) { if (q === from || q.welcome) continue; const m = placeDisc(from, q); if (m) otherDiscs.add(m); }
+  // 1.0.6, 23 Nov 22:04 (Christian: "In info mode don't show other sites more than 200 m away")
+  const far = q => !only && from && from.map && q.map && Math.hypot(q.map[0] - from.map[0], q.map[1] - from.map[1]) > 200;
+  for (const q of only ? [only] : panos) { if (q === from || q.welcome || far(q)) continue; const m = placeDisc(from, q); if (m) otherDiscs.add(m); }
   otherDiscs.visible = otherDiscs.children.length > 0;
 }
 
@@ -916,7 +946,7 @@ const VIEWER_NAME = 'Rover Photogrammetry Viewer (RPV)';
 const RPV_VERSION = '1.0.6';
 // 1.0.6, 22 Nov: the page's own date, shown beside the version - a viewer fix between versions changes only this, so
 // a phone or headset shows whether it has the newest page (a tab left open keeps the page it loaded)
-const RPV_PAGE = '23 Nov 17:55';
+const RPV_PAGE = '23 Nov 20:10';
 function setVer(made) {                                           // made: "rendered with RPP x (date)" of the station shown
   $('ver').textContent = [`RPV viewer ${RPV_VERSION} (${RPV_PAGE})`, made].filter(Boolean).join('  |  ');
 }
