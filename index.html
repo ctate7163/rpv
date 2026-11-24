@@ -52,7 +52,8 @@ if (location.hostname === 'ctate7163.github.io' && (/^\/(RPP|MPPP)\/ods(\/|$)/i.
   thumbsticks (forward / back: the track on that side; 1.0: left / right turns the rover, not the view; on a screen
   the arrow keys); the viewer rides at the mast.
   0.99.26: 3D terrain and rover - the terrain within 10 m (20 m from 0.99.39) and the rover as textured surfaces (true parallax), the
-  terrain-only panorama beyond; the head may move 1 m from where the mode started, then the surface comes along.
+  terrain-only panorama beyond; the head may move 1 m from where the mode started, then the surface comes along
+  (1.0.7: 2 m to the side, 1 m down, 10 cm up).
 -->
 <style>
   html, body { margin: 0; height: 100%; background: #000; color: #eee; font: 14px/1.4 system-ui, sans-serif; overflow: hidden; }
@@ -976,7 +977,7 @@ const VIEWER_NAME = 'Rover Photogrammetry Viewer (RPV)';
 const RPV_VERSION = '1.0.7';
 // 1.0.6, 22 Nov: the page's own date, shown beside the version - a viewer fix between versions changes only this, so
 // a phone or headset shows whether it has the newest page (a tab left open keeps the page it loaded)
-const RPV_PAGE = '24 Nov 13:40';
+const RPV_PAGE = '24 Nov 13:15';
 function setVer(made) {                                           // made: "rendered with RPP x (date)" of the station shown
   $('ver').textContent = [`RPV viewer ${RPV_VERSION} (${RPV_PAGE})`, made].filter(Boolean).join('  |  ');
 }
@@ -1223,10 +1224,11 @@ function variants(p) { return p.variants || []; }
 // is its Navcam run's, textured from all the frames (blurry where they disagree), and its panorama has no frames of the
 // rover - so its rover projected from the pivot is the Navcam station's at the same place (same map position, same RPP):
 // the same model about the same pivot (Sol1965 and Sol1968_Z34: every vertex the same), the Navcam pixels sharp
-function navcamRover(p, vr) {
+const rppOf = p => p.rpp || p.mppp;          // the version a station was made with
+    function navcamRover(p, vr) {
   if (!p || !/_Z34$/.test(p.id || '') || !p.map) return null;
   const q = panos.find(o => o !== p && !/_Z34$/.test(o.id || '') && o.map && Math.abs(o.map[0] - p.map[0]) < 0.05 &&
-                            Math.abs(o.map[1] - p.map[1]) < 0.05 && (o.rpp || o.mppp) === (p.rpp || p.mppp));
+                            Math.abs(o.map[1] - p.map[1]) < 0.05 && rppOf(o) === rppOf(p));
   if (!q) return null;
   const w = variants(q).find(v => v.key === (vr && vr.key) && v.rover_surface) || variants(q).find(v => v.rover_surface);
   return w ? w.rover_surface : null;
@@ -1507,7 +1509,7 @@ async function show() {
     if (faceAfterLoad) { faceAz(faceAfterLoad); faceAfterLoad = null; }
     if (infoPanel.visible) drawInfo();
     noteParts = [tidyName(p.title) || p.id, p.note, modeLabel(), whole ? `${(vr.station_mesh.triangles || 0).toLocaleString()} triangles` : size,
-                 (p.rpp || p.mppp) ? `rendered with RPP ${p.rpp || p.mppp}` + (p.published ? ` (${dayOf(p.published)})` : '') : ''];
+                 (p.rpp || p.mppp) ? (p.panorama_rpp ? `panoramas RPP ${p.panorama_rpp}, 3D model RPP ${p.rpp || p.mppp}` : `rendered with RPP ${p.rpp || p.mppp}`) + (p.published ? ` (${dayOf(p.published)})` : '') : ''];   // 1.0.7: a station finished from an earlier version's panoramas
     setNote();
     msg('');
     prefetchNeighbors();                                         // 1.0.6: the next and previous stations' 3D files
@@ -1756,7 +1758,9 @@ function screenEye3(dt) {                                        // -> eyeMove: 
   const k = 1 - Math.exp(-dt / 0.25);
   hoverNow.lerp(hover, k);
   const sx = eyeReach * hoverNow.x, sy = eyeReach * hoverNow.y;
-  return eyeMove.addScaledVector(eyeFwd, -NECK_M).addScaledVector(eyeRight, sx).addScaledVector(eyeUp, sy);
+  eyeMove.addScaledVector(eyeFwd, -NECK_M).addScaledVector(eyeRight, sx).addScaledVector(eyeUp, sy);
+  eyeMove.y = Math.min(eyeMove.y, HOLD_UP_M);                    // 1.0.7: on a screen too, no more than 10 cm over the cameras
+  return eyeMove;
 }
 function look() {
   pitch = Math.max(-Math.PI / 2, Math.min(Math.PI / 2, pitch));
@@ -1931,13 +1935,20 @@ function turnMarkText() {                                        // the ring's t
 // surface comes along when the head goes farther than move_limit_m from where it was anchored, so the viewer stays in
 // the space every surface was textured for
 const offHead = new THREE.Vector3();
+const HOLD_SIDE_M = 2.0, HOLD_UP_M = 0.10, HOLD_DOWN_M = 1.0;
 function holdNearPivot() {
   const vr = (variants(panos[cur.s] || {})[cur.v]) || {}, sm = vr.station_mesh;
   if (!sm || !anchored) return;
-  const lim = sm.move_limit_m > 0 ? sm.move_limit_m : 1.0;
+  // 1.0.7, 24 Nov (Christian: "The height of the pivot should be limited to 10 cm above the ncam height. If the viewer
+  // raises above that, then bring the whole site down. The lateral extent of the pivot should be expanded from 1 m to
+  // 2 m"): the head may be HOLD_SIDE_M to the side of the pivot and HOLD_DOWN_M under it, but no more than HOLD_UP_M
+  // over it - an eye higher than the cameras were sees over the ridges, where no camera looked.  Past a limit the site
+  // comes along with the head (so the eye stays at most 10 cm over the cameras' height, however tall the viewer stands)
   offHead.subVectors(head, fixed.position);
-  const L = offHead.length();
-  if (L > lim) fixed.position.addScaledVector(offHead, (L - lim) / L);
+  const side = Math.hypot(offHead.x, offHead.z), lim = Math.max(HOLD_SIDE_M, sm.move_limit_m || 0);
+  if (side > lim) { const k = (side - lim) / side; fixed.position.x += offHead.x * k; fixed.position.z += offHead.z * k; }
+  if (offHead.y > HOLD_UP_M) fixed.position.y += offHead.y - HOLD_UP_M;
+  else if (offHead.y < -HOLD_DOWN_M) fixed.position.y += offHead.y + HOLD_DOWN_M;
 }
 // 1.0.6, 22 Nov: frames per second and the drawing size, on the top line of the lower left, twice a second
 let perfN = 0, perfT0 = performance.now();
