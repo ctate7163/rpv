@@ -294,13 +294,19 @@ markDisc.rotation.x = -Math.PI / 2;
 markDisc.visible = false;
 world.add(markDisc);
 let markOn = true, markId = 0, markTextAz = 0;
-async function showMark(gm) {
+// 1.0.6, 23 Nov (Christian: "The clicking for the next site, it takes some time to switch during which the blue disk
+// switches to the next site before the surrounding a change. Make sure those switch at the same time"): the mark's
+// picture is fetched when the station is chosen, and put on (or the old one taken off) only when show() swaps the
+// surroundings - prepareMark(gm) gives a function that does that
+function prepareMark(gm) {
   const id = ++markId;
-  markDisc.visible = false;
-  if (!gm || !gm.file || !(gm.depth_m > 0) || !(gm.radius_m > 0)) return;
-  try {
-    const bmp = await createImageBitmap(await (await fetch(new URL(gm.file, base).href)).blob(), { imageOrientation: 'flipY' });
-    if (id !== markId) { bmp.close(); return; }
+  if (!gm || !gm.file || !(gm.depth_m > 0) || !(gm.radius_m > 0)) return Promise.resolve(() => { if (id === markId) markDisc.visible = false; });
+  return fetchBlob(new URL(gm.file, base).href).then(b => createImageBitmap(b, { imageOrientation: 'flipY' }))
+    .then(bmp => () => { if (id !== markId) { bmp.close(); return; } putMark(gm, bmp); },
+          e => { console.warn('ground mark', e); return () => { if (id === markId) markDisc.visible = false; }; });
+}
+function putMark(gm, bmp) {
+  {
     const t = new THREE.Texture(bmp);
     t.flipY = false; t.colorSpace = THREE.SRGBColorSpace; t.generateMipmaps = true;
     t.minFilter = THREE.LinearMipmapLinearFilter; t.anisotropy = Math.min(8, renderer.capabilities.getMaxAnisotropy());
@@ -312,7 +318,43 @@ async function showMark(gm) {
     markDisc.position.set(0, -gm.depth_m, 0);
     markTextAz = THREE.MathUtils.degToRad(gm.text_centre_azimuth_deg || 0);    // where the text's middle is in the picture
     markDisc.visible = markOn;
-  } catch (e) { console.warn('ground mark', e); }
+    markRadius = gm.radius_m; markDepth = gm.depth_m;
+  }
+}
+// 1.0.6, 23 Nov (Christian: "Before the switch make the next blue disk appear where the next site is relative to the
+// present site. When pushing info or X, bring up all the blue circles in their relative locations scaled for distance.
+// The blue disks do not need to be textured, but flat blue disks"): plain light-blue discs on the ground at the other
+// stations' places (panos.json "map": m east and north), seen from this one.  Up to 25 m a station is at its own
+// distance, lying flat, the size of this station's mark; farther ones are drawn nearer (25 m x (1 + ln(d / 25)):
+// 100 m at 60 m, 1 km at 117 m, 10 km at 175 m) and larger with their drawn distance, and they turn up to face the eye
+// (a flat disc 100 m off is a sliver), so all of them can be seen and told apart by direction and distance
+let markRadius = 0.8, markDepth = 1.9;
+const otherDiscs = new THREE.Group();
+otherDiscs.visible = false;
+world.add(otherDiscs);
+const discGeo = new THREE.CircleGeometry(1, 48);
+const discMat = new THREE.MeshBasicMaterial({ color: 0xb0d4ee, transparent: true, opacity: 0.85, depthTest: false, depthWrite: false, side: THREE.DoubleSide });
+function placeDisc(from, to) {
+  if (!from || !to || !from.map || !to.map) return null;
+  const de = to.map[0] - from.map[0], dn = to.map[1] - from.map[1], d = Math.hypot(de, dn);
+  if (d < 0.5) return null;                                      // the same place (a Mastcam-Z station and its Navcams)
+  const s = d <= 25 ? d : 25 * (1 + Math.log(d / 25)), k = s / d;
+  const m = new THREE.Mesh(discGeo, discMat);
+  m.renderOrder = 2; m.frustumCulled = false;
+  m.position.set(de * k, -markDepth, -dn * k);                   // x east, y up, z south
+  m.scale.setScalar(markRadius * Math.max(1, s / 12));
+  const up = new THREE.Vector3(0, 1, 0), eye = m.position.clone().negate().normalize();
+  const t = THREE.MathUtils.clamp((s - 8) / 40, 0, 1);
+  m.lookAt(m.position.clone().add(up.lerp(eye, t).normalize()));
+  m.userData.station = to.id;
+  return m;
+}
+function clearDiscs() { while (otherDiscs.children.length) otherDiscs.remove(otherDiscs.children[0]); otherDiscs.visible = false; }
+let discsAll = false;
+function showDiscs(from, only) {                                 // only: the one station being opened; else all
+  clearDiscs();
+  for (const q of only ? [only] : panos) { if (q === from || q.welcome) continue; const m = placeDisc(from, q); if (m) otherDiscs.add(m); }
+  otherDiscs.visible = otherDiscs.children.length > 0;
 }
 
 // ---------------------------------------------------------------- the rover as a 3D model (0.98.14)
@@ -573,7 +615,7 @@ async function swapSkin(url) {
         skinTex.t.dispose(); if (skinTex.t.image && skinTex.t.image.close) skinTex.t.image.close();   // memory: three 8K
         skinTex = { url: null, t: null };            // textures at once did not fit)
       }
-      const bmp = await createImageBitmap(await (await fetch(url)).blob());
+      const bmp = await createImageBitmap(await fetchBlob(url));
       if (id !== swapId || rid !== roverId) { bmp.close(); return; }
       t = new THREE.Texture(bmp);
       t.flipY = false; t.wrapS = THREE.RepeatWrapping; t.generateMipmaps = true; t.colorSpace = THREE.NoColorSpace;
@@ -610,7 +652,20 @@ function dropRover() {
 // next sites 3d assets so they are ready to go earlier?"): the old surfaces stay on until the new ones are made, then
 // the two are swapped in one frame; and the 3D files of the stations before and after this one are fetched in the
 // background once it is up (GLB_CACHE files kept, the oldest dropped)
-const GLB_CACHE = 4;
+const GLB_CACHE = 6;                                             // 1.0.6, 23 Nov: 4 until then (the rover surfaces too now)
+// 1.0.6, 23 Nov (Christian: "To speed loading, start downloading the next and previous site assets and have them ready
+// to load asap"): the pictures too - panorama, color skin, ground mark - kept as fetched (BLOB_CACHE, the oldest dropped)
+const BLOB_CACHE = 8;
+const blobCache = new Map();                                     // url -> Promise<Blob>
+function fetchBlob(url) {
+  let pr = blobCache.get(url);
+  if (pr) { blobCache.delete(url); blobCache.set(url, pr); return pr; }
+  pr = fetch(url).then(r => { if (!r.ok) throw new Error(`${r.status} ${r.statusText}`); return r.blob(); });
+  pr.catch(() => blobCache.delete(url));
+  blobCache.set(url, pr);
+  while (blobCache.size > BLOB_CACHE) blobCache.delete(blobCache.keys().next().value);
+  return pr;
+}
 const glbCache = new Map();                                      // url -> Promise<ArrayBuffer>
 function fetchGlb(url) {
   let pr = glbCache.get(url);
@@ -627,11 +682,33 @@ function fileOfStation(q) {                                      // the 3D file 
   const v = vs.find(x => x.key === here && x.station_mesh) || vs.find(x => x.key === 'scape3d') || vs.find(x => x.station_mesh);
   return v && v.station_mesh && v.station_mesh.file ? new URL(v.station_mesh.file, base).href : null;
 }
+function picturesOfStation(q) {                                  // 1.0.6, 23 Nov: what the page would open at q besides
+  if (!q) return { glbs: [], blobs: [] };                        // its 3D file, in this terrain mode and color view
+  // 1.0.6, 23 Nov (Christian: "No need to preload the other color versions"): standard color only - the view a new
+  // station opens in
+  const here = variants(panos[cur.s] || {})[cur.v] || {}, k = 'standard';
+  const vs = variants(q), v = vs.find(x => x.key === here.key) || vs[0];
+  if (!v) return { glbs: [], blobs: [] };
+  const abs = f => f ? new URL(f, base).href : null, glbs = [], blobs = [];
+  const rs = color(k) && (navcamRover(q, v) || v.rover_surface);
+  if (rs && rs.file) glbs.push(abs(rs.file));
+  if (!isWhole(v) && v.views) blobs.push(abs(v.views[fileView(k)] || v.views.standard));
+  const sm = v.station_mesh, skin = sm && sm.skins && k !== 'raw color' && sm.skins[k];
+  if (skin) blobs.push(abs(skin));
+  if (v.ground_mark && v.ground_mark.file) blobs.push(abs(v.ground_mark.file));
+  return { glbs: glbs.filter(Boolean), blobs: blobs.filter(Boolean) };
+}
 function prefetchNeighbors() {
   if (!panos.length) return;
-  for (const d of [1, -1]) {
-    const u = fileOfStation(panos[(cur.s + d + panos.length) % panos.length]);
+  const later = [];
+  for (const d of [1, -1]) {                                     // the 3D files first (the largest), next then previous
+    const q = panos[(cur.s + d + panos.length) % panos.length], u = fileOfStation(q);
     if (u) fetchGlb(u).catch(e => console.warn('prefetch', u, e));
+    later.push(picturesOfStation(q));
+  }
+  for (const f of later) {
+    for (const u of f.glbs) fetchGlb(u).catch(e => console.warn('prefetch', u, e));
+    for (const u of f.blobs) fetchBlob(u).catch(e => console.warn('prefetch', u, e));
   }
 }
 async function showRover(rs, opt = {}) {
@@ -735,7 +812,7 @@ async function loadSurface(rs, opt) {                            // -> {made: [m
         let t = shared.get(key);
         textures = [];
         if (!t) {
-          t = new THREE.Texture(useSkin ? await createImageBitmap(await (await fetch(opt.skin)).blob()) : await image(src));
+          t = new THREE.Texture(useSkin ? await createImageBitmap(await fetchBlob(opt.skin)) : await image(src));
           t.flipY = false; t.wrapS = THREE.RepeatWrapping; t.generateMipmaps = true;
           t.colorSpace = rs.triangles != null ? THREE.NoColorSpace : THREE.SRGBColorSpace;
           t.minFilter = THREE.LinearMipmapLinearFilter; t.anisotropy = Math.min(8, renderer.capabilities.getMaxAnisotropy());
@@ -839,7 +916,7 @@ const VIEWER_NAME = 'Rover Photogrammetry Viewer (RPV)';
 const RPV_VERSION = '1.0.6';
 // 1.0.6, 22 Nov: the page's own date, shown beside the version - a viewer fix between versions changes only this, so
 // a phone or headset shows whether it has the newest page (a tab left open keeps the page it loaded)
-const RPV_PAGE = '23 Nov 13:45';
+const RPV_PAGE = '23 Nov 17:55';
 function setVer(made) {                                           // made: "rendered with RPP x (date)" of the station shown
   $('ver').textContent = [`RPV viewer ${RPV_VERSION} (${RPV_PAGE})`, made].filter(Boolean).join('  |  ');
 }
@@ -1042,7 +1119,8 @@ const fwd = new THREE.Vector3();
 const INFO_TILT_RAD = -1.2;      // 0.98.14 (Christian: "Tilt the info window back further so that it is easier to read from the
 //                                  wrist"): the page leans back 69 deg from upright on the controller (40 deg before)
 function toggleInfo() {
-  if (infoPanel.visible) { infoPanel.visible = false; updateSkyWords(); return; }
+  if (infoPanel.visible) { infoPanel.visible = false; updateSkyWords(); discsAll = false; clearDiscs(); return; }
+  discsAll = true; showDiscs(shownStation || panos[cur.s]);      // 1.0.6, 23 Nov: every station's disc while the info is up
   drawInfo();
   if (renderer.xr.isPresenting && leftGrip) {                    // on the left hand: 19 cm wide (16 until 0.98.14), above the controller
     leftGrip.add(infoPanel);
@@ -1206,7 +1284,7 @@ function centerFileOf(full) {
   return (vr && vr.center && vr.center[fileView(k)]) || null;
 }
 async function decodePano(url) {                                 // a picture as a texture for a sphere
-  const blob = await (await fetch(url)).blob();
+  const blob = await fetchBlob(url);                             // 1.0.6: perhaps fetched ahead
   let bmp = await createImageBitmap(blob, { imageOrientation: 'flipY' });
   if (Math.max(bmp.width, bmp.height) > maxTex) {                // a device with smaller textures: reduce once
     const k = maxTex / Math.max(bmp.width, bmp.height);
@@ -1257,6 +1335,11 @@ function setNote() {
   setVer(noteParts[4]);
 }
 
+let shownStation = null;                                         // 1.0.6, 23 Nov: the station whose surroundings are up
+function afterSwitch(p) {
+  shownStation = p;
+  if (discsAll) showDiscs(p); else clearDiscs();
+}
 async function show() {
   const p = panos[cur.s];
   if (!p) return;
@@ -1275,6 +1358,8 @@ async function show() {
   // pivot at the eyes in a headset, the heading as it was (only the position is set: see the render loop)
   const id = ++loadId, url = new URL(file, base).href, whole = isWhole(vr);
   setGain(p, names[cur.w]);
+  const markReady = prepareMark(color(names[cur.w]) ? vr.ground_mark : null);   // 1.0.6: fetched now, put on with the rest
+  if (shownStation && shownStation !== p && !discsAll) showDiscs(shownStation, p);   // 1.0.6: where the next one is
   msg(`loading ${p.title || p.id} ...`);
   setEye(wantEye);                                               // 0.99.36: center where this choice has one, else the left eye
   try {
@@ -1289,7 +1374,7 @@ async function show() {
       setGain(p, names[cur.w]);
       size = `${bmp.width} x ${bmp.height}`;
     }
-    showMark(color(names[cur.w]) ? vr.ground_mark : null);        // not over the range and normal views
+    if (!whole) { const put = await markReady; if (id !== loadId) return; put(); afterSwitch(p); }   // with the panorama
     // 0.99.26: the fourth mode, "3D terrain and rover" - the station mesh (terrain within 20 m - 10 m until 0.99.39 -
     // and the rover, textured: rpp.ibr.station_mesh) in front of the terrain-only panorama, its backdrop beyond
     // 0.99.38: in the normal-map view a 3D mode draws its surfaces with their own normals; the station mesh's rover is
@@ -1318,7 +1403,11 @@ async function show() {
       : sm && (color(names[cur.w]) || nmView || dView) ? showRover(sm, { normals: nmView, distance: dView,
         skin: skinUrl, rover: navcamRover(p, vr) || vr.rover_surface || scape && scape.rover_surface, roverOver: ownRover(sm) })
       : showRover(color(names[cur.w]) || (nmView && vr.rover_surface) ? (vr.rover_surface && navcamRover(p, vr) || vr.rover_surface) : null, { normals: nmView });   // 1.0.6: a Mastcam-Z stereo view's rover from its Navcam station
-    if (whole) { await surf; if (id !== loadId) return; }        // 0.99.40: the 3D file is the picture: "loading" until it is in
+    if (whole) {                                                 // 0.99.40: the 3D file is the picture: "loading" until it is in
+      await surf; if (id !== loadId) return;
+      const put = await markReady; if (id !== loadId) return;
+      put(); afterSwitch(p);                                       // 1.0.6: the mark and discs with the surfaces, one frame
+    }
     // 0.99.15 (Christian, 17 Nov 2026: "the north direction should be preserved when moving from site to site. I noticed
     // this looks rotated for the welcome screen compared to the van zyl site"): until now every panorama set its own start
     // heading (west for the welcome view, yaw_deg or north for a station), so a change of station turned the world under
@@ -1340,7 +1429,7 @@ async function show() {
     setNote();
     msg('');
     prefetchNeighbors();                                         // 1.0.6: the next and previous stations' 3D files
-  } catch (e) { if (id === loadId) msg(`could not load ${url}: ${e.message || e}`); }
+  } catch (e) { if (id === loadId) { msg(`could not load ${url}: ${e.message || e}`); if (!discsAll) clearDiscs(); } }
 }
 
 function color(k) { return !/^(normal|distance|range)/.test(k || ''); }   // 0.99.37: raw, enhanced tone, dcs too
@@ -1351,7 +1440,8 @@ function step(what, d) {
     for (let i = 1; i <= names.length; i++) { const j = (cur.w + i) % names.length; if (color(names[j])) { cur.w = j; break; } }
     show(); return;
   }
-  if (what === 's') { const wn = leaveName(); cur.s = (cur.s + d + panos.length) % panos.length; pick(panos[cur.s], mode === 'drive' ? 'drive' : want, wn); }   // 0.99.40: the terrain mode and the rover kept
+  // 1.0.6, 23 Nov (Christian: "Go back to standard color when switching sites"): a new station opens in standard color
+  if (what === 's') { const wn = 'standard'; cur.s = (cur.s + d + panos.length) % panos.length; pick(panos[cur.s], mode === 'drive' ? 'drive' : want, wn); }   // 0.99.40: the terrain mode and the rover kept
   if (what === 'v') {                                            // 0.99.40: the next terrain mode (V; headset: right grip)
     const ms = modesOf(p).map(x => x[0]), i = ms.indexOf(mode === 'drive' ? 'full' : mode);
     want = ms[(i + d + ms.length) % Math.max(ms.length, 1)] || 'stereo';
@@ -1454,7 +1544,7 @@ function fromHash(first) {
 }
 
 const blurAfter = e => { if (e && e.target && e.target.blur) e.target.blur(); };   // 0.99.37: the keys back to the page
-$('station').onchange = e => { const wn = leaveName(); cur.s = +e.target.value; pick(panos[cur.s] || {}, want, wn); show(); blurAfter(e); };
+$('station').onchange = e => { const wn = 'standard'; cur.s = +e.target.value; pick(panos[cur.s] || {}, want, wn); show(); blurAfter(e); };
 $('variant').onchange = e => { want = e.target.value; pick(panos[cur.s] || {}, want, viewName()); show(); blurAfter(e); };   // 0.99.40: a terrain mode
 $('view').onchange = e => { cur.w = +e.target.value; show(); blurAfter(e); };
 $('eye').onchange = e => { setEye(e.target.value); blurAfter(e); };
