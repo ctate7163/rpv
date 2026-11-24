@@ -415,7 +415,8 @@ function showDiscs(from, only) {                                 // only: the on
 // (A file of 0.98.2-0.98.13 - a grid mesh with its own texture coordinates - is still shown, as it was.)
 const fixed = new THREE.Group();
 scene.add(fixed);
-let roverParts = [], roverOn = false, roverId = 0, anchored = false;     // 0.99.40: roverOn - the rover shown (button R)
+let roverParts = [], roverOn = true, roverId = 0, anchored = false;   // 1.0.6, 24 Nov (Christian: "The rover should be visible by default"): true (false until then)
+//     // 0.99.40: roverOn - the rover shown (button R)
 renderer.xr.addEventListener('sessionstart', () => { anchored = false; });
 const ROVER_VERT = `
   varying vec3 vP;
@@ -647,39 +648,51 @@ let surfState = null, skinTex = { url: null, t: null };
 function canSwap(sm, url) {
   if (!surfState || surfState.shader !== 'c' || !sm || surfState.file !== sm.file || surfState.noHorizon !== !!sm.noHorizon ||
       surfState.drive !== !!(sm.drive && sm.whole)) return false;   // 0.99.42: into or out of the drive loads again (it starts / ends there)
-  return !!url || roverParts.some(m => m.userData.baseTex);
+  const tp = roverParts.filter(m => m.userData.kind === 'terrain' || m.userData.kind === 'horizon');
+  return !!url || (tp.length > 0 && tp.every(m => m.userData.baseTex));   // 1.0.7: every one (the shell has its own picture)
 }
 let swapId = 0;
-async function swapSkin(url) {
-  let t = null;
+// 1.0.7: a full 3D file of RPP 1.0.7 has a shell with its own picture (cut from the panorama) and its own color skins
+// (station_mesh.shell.skins); shellUrl undefined: a file of before - the shell wears the terrain's skin
+let shellTex = { url: null, t: null };
+function freeSkin(slot) {
+  if (!slot.t) return;
+  for (const m of roverParts) if (m.material.uniforms && m.material.uniforms.map && m.material.uniforms.map.value === slot.t && m.userData.baseTex) m.material.uniforms.map.value = m.userData.baseTex;
+  slot.t.dispose(); if (slot.t.image && slot.t.image.close) slot.t.image.close();   // 0.99.52: memory: three 8K textures
+  slot.url = null; slot.t = null;                // at once did not fit a headset
+}
+async function skinOf(slot, url, id, rid) {      // the texture of a skin picture in its slot; null: none (or overtaken)
+  if (!url) return null;
+  if (slot.url === url && slot.t) return slot.t;
+  freeSkin(slot);                                // the last skin freed before the next is decoded
+  const bmp = await createImageBitmap(await fetchBlob(url));
+  if (id !== swapId || rid !== roverId) { bmp.close(); return undefined; }
+  const t = new THREE.Texture(bmp);
+  t.flipY = false; t.wrapS = THREE.RepeatWrapping; t.generateMipmaps = true; t.colorSpace = THREE.NoColorSpace;
+  t.minFilter = THREE.LinearMipmapLinearFilter; t.anisotropy = Math.min(8, renderer.capabilities.getMaxAnisotropy());
+  t.needsUpdate = true;
+  slot.url = url; slot.t = t;
+  return t;
+}
+async function swapSkin(url, shellUrl) {
   const id = ++swapId, rid = roverId;              // a later choice (another skin, another station) wins
-  if (url) {
-    t = skinTex.url === url ? skinTex.t : null;
-    if (!t) {
-      if (skinTex.t) {                               // 0.99.52: the last skin freed before the next is decoded (a headset's
-        for (const m of roverParts) if (m.material.uniforms && m.material.uniforms.map && m.material.uniforms.map.value === skinTex.t && m.userData.baseTex) m.material.uniforms.map.value = m.userData.baseTex;
-        skinTex.t.dispose(); if (skinTex.t.image && skinTex.t.image.close) skinTex.t.image.close();   // memory: three 8K
-        skinTex = { url: null, t: null };            // textures at once did not fit)
-      }
-      const bmp = await createImageBitmap(await fetchBlob(url));
-      if (id !== swapId || rid !== roverId) { bmp.close(); return; }
-      t = new THREE.Texture(bmp);
-      t.flipY = false; t.wrapS = THREE.RepeatWrapping; t.generateMipmaps = true; t.colorSpace = THREE.NoColorSpace;
-      t.minFilter = THREE.LinearMipmapLinearFilter; t.anisotropy = Math.min(8, renderer.capabilities.getMaxAnisotropy());
-      t.needsUpdate = true;
-      skinTex = { url, t };
-    }
-  }
+  const t = await skinOf(skinTex, url, id, rid);
+  if (t === undefined) return;
+  const ts = shellUrl === undefined ? t : await skinOf(shellTex, shellUrl, id, rid);
+  if (ts === undefined) return;
   for (const m of roverParts) if ((m.userData.kind === 'terrain' || m.userData.kind === 'horizon') && m.material.uniforms && m.material.uniforms.map) {
-    const b = t || m.userData.baseTex;
+    const b = (m.userData.kind === 'horizon' ? ts : t) || m.userData.baseTex;
     if (b) m.material.uniforms.map.value = b;
   }
+  if (!url) freeSkin(skinTex);
+  if (!shellUrl) freeSkin(shellTex);
   if (surfState) surfState.skin = url;
 }
 function dropRover() {
   meshFade = fadeBase = null;
   surfState = null;
   if (skinTex.t) { skinTex.t.dispose(); if (skinTex.t.image && skinTex.t.image.close) skinTex.t.image.close(); skinTex = { url: null, t: null }; }
+  if (shellTex.t) { shellTex.t.dispose(); if (shellTex.t.image && shellTex.t.image.close) shellTex.t.image.close(); shellTex = { url: null, t: null }; }
   driveStop();
   if (wholeScene) { wholeScene = false; for (const k in spheres) spheres[k].visible = true; }
   for (const m of roverParts) {
@@ -768,7 +781,7 @@ async function showRover(rs, opt = {}) {
     for (const [file, isMain] of [[rs, true]].concat(second ? [[opt.rover, false]] : [])) {
       const got = await loadSurface(file, { normals: !!opt.normals, distance: !!opt.distance, over: !isMain && over,
                                             skipRover: isMain && !!second && !over,
-                                            skipHorizon: isMain && !!rs.noHorizon, skin: isMain ? opt.skin : null });
+                                            skipHorizon: isMain && !!rs.noHorizon, skin: isMain ? opt.skin : null, shellSkin: isMain ? opt.shellSkin : undefined });
       if (got.fade) fadeU = got.fade;
       made.push(...got.made);
       if (id !== roverId) break;
@@ -852,12 +865,14 @@ async function loadSurface(rs, opt) {                            // -> {made: [m
         g.setAttribute('uv', new THREE.BufferAttribute(arr(prim.attributes.TEXCOORD_0, Float32Array, 2), 2));
         const src = doc.textures[doc.materials[prim.material].pbrMetallicRoughness.baseColorTexture.index].source;
         // 0.99.41: a color skin of the full 3D texture (opt.skin, a picture beside the file) on the terrain and its shell
-        const useSkin = !!opt.skin && (me.name === 'terrain' || me.name === 'horizon');
-        const key = useSkin ? 'skin' : src;
+        // 1.0.7: the shell's own skin (opt.shellSkin; undefined: a file of before, whose shell wears the terrain's)
+        const skinUrl_ = me.name === 'horizon' && opt.shellSkin !== undefined ? opt.shellSkin : opt.skin;
+        const useSkin = !!skinUrl_ && (me.name === 'terrain' || me.name === 'horizon');
+        const key = useSkin ? 'skin:' + skinUrl_ : src;
         let t = shared.get(key);
         textures = [];
         if (!t) {
-          t = new THREE.Texture(useSkin ? await createImageBitmap(await fetchBlob(opt.skin)) : await image(src));
+          t = new THREE.Texture(useSkin ? await createImageBitmap(await fetchBlob(skinUrl_)) : await image(src));
           t.flipY = false; t.wrapS = THREE.RepeatWrapping; t.generateMipmaps = true;
           t.colorSpace = rs.triangles != null ? THREE.NoColorSpace : THREE.SRGBColorSpace;
           t.minFilter = THREE.LinearMipmapLinearFilter; t.anisotropy = Math.min(8, renderer.capabilities.getMaxAnisotropy());
@@ -958,10 +973,10 @@ const VIEWER_NAME = 'Rover Photogrammetry Viewer (RPV)';
 // 0.99.36 (Christian, 19 Nov 2026: "please put the rpp-rpv viewer version number on the lower left above the site name,
 // images size, and version on which the site was rendered"): the page's own version (the RPP release that wrote it;
 // tests/test_station_mesh.py keeps it equal to rpp.__version__), above the station's line
-const RPV_VERSION = '1.0.6';
+const RPV_VERSION = '1.0.7';
 // 1.0.6, 22 Nov: the page's own date, shown beside the version - a viewer fix between versions changes only this, so
 // a phone or headset shows whether it has the newest page (a tab left open keeps the page it loaded)
-const RPV_PAGE = '24 Nov 08:00';
+const RPV_PAGE = '24 Nov 13:40';
 function setVer(made) {                                           // made: "rendered with RPP x (date)" of the station shown
   $('ver').textContent = [`RPV viewer ${RPV_VERSION} (${RPV_PAGE})`, made].filter(Boolean).join('  |  ');
 }
@@ -1464,9 +1479,11 @@ async function show() {
     const dView = /^(distance|range)/.test(names[cur.w] || '');   // 0.99.41: a 3D mode's distance map from its surfaces
     const skinFile = sm && sm.skins && names[cur.w] !== 'raw color' && sm.skins[names[cur.w]];   // 1.0.6: raw from the file's own      // 0.99.41: the color skin of the full 3D texture
     const skinUrl = skinFile ? new URL(skinFile, base).href : null;
-    const surf = sm && color(names[cur.w]) && canSwap(sm, skinUrl) ? swapSkin(skinUrl)       // 0.99.41: the picture alone
+    const shellFile = sm && sm.shell && sm.shell.skins && names[cur.w] !== 'raw color' && sm.shell.skins[names[cur.w]];
+    const shellUrl = sm && sm.shell ? (shellFile ? new URL(shellFile, base).href : null) : undefined;   // 1.0.7: the shell's own skin
+    const surf = sm && color(names[cur.w]) && canSwap(sm, skinUrl) ? swapSkin(skinUrl, shellUrl)       // 0.99.41: the picture alone
       : sm && (color(names[cur.w]) || nmView || dView) ? showRover(sm, { normals: nmView, distance: dView,
-        skin: skinUrl, rover: navcamRover(p, vr) || vr.rover_surface || scape && scape.rover_surface, roverOver: ownRover(sm) })
+        skin: skinUrl, shellSkin: shellUrl, rover: navcamRover(p, vr) || vr.rover_surface || scape && scape.rover_surface, roverOver: ownRover(sm) })
       : showRover(color(names[cur.w]) || (nmView && vr.rover_surface) ? (vr.rover_surface && navcamRover(p, vr) || vr.rover_surface) : null, { normals: nmView });   // 1.0.6: a Mastcam-Z stereo view's rover from its Navcam station
     if (whole) {                                                 // 0.99.40: the 3D file is the picture: "loading" until it is in
       await surf; if (id !== loadId) return;
