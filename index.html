@@ -184,6 +184,28 @@ document.body.dataset.device = DEVICE;
 
 // ---------------------------------------------------------------- scene: one sphere per eye, the viewer at its center
 const renderer = new THREE.WebGLRenderer({ antialias: true });   // 0.98.14: the rover model's edges (false until then)
+// 1.0.9 (Christian, 26 Nov 2026: "add UASTC compressed textures to the standard processing" ... "use ETC1S and UASTC"):
+// opened with ?ktx2=uastc or ?ktx2=etc1s, the 3D files' pictures are taken from their KTX2 copies (entry.ktx2[mode]
+// ["img<N>"], rpp.ibr.ktx2) - GPU-compressed, so far less video memory and no JPEG decode on the main thread.  Without
+// the switch, or when a copy is missing or fails to load, the picture inside the .glb is used as before.
+const KTX2_MODE = (() => { try { const m = new URLSearchParams(location.search).get('ktx2'); return m === 'uastc' || m === 'etc1s' ? m : null; } catch (e) { return null; } })();
+let ktx2Loader = null;
+async function ktx2Load(url) {
+  if (!ktx2Loader) {
+    const { KTX2Loader } = await import('./vendor/KTX2Loader.js');
+    ktx2Loader = new KTX2Loader().setTranscoderPath(new URL('./vendor/basis/', location.href).href).detectSupport(renderer);
+  }
+  return ktx2Loader.loadAsync(url);
+}
+async function glbTexture(rs, src, decode) {                     // a .glb picture's texture: its KTX2 copy, else the picture
+  const u = KTX2_MODE && rs && rs.ktx2 && rs.ktx2[KTX2_MODE] && rs.ktx2[KTX2_MODE]['img' + src];
+  if (u) {
+    try { const t = await ktx2Load(new URL(u, base).href); t.userData.ktx2 = KTX2_MODE; return t; }
+    catch (e) { console.warn('ktx2: the picture of the file instead', u, e); }
+  }
+  return new THREE.Texture(await decode());
+}
+function fixCompressed(t) { if (t.isCompressedTexture) { t.generateMipmaps = false; t.flipY = false; } return t; }   // its own mipmaps
 renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
 renderer.setSize(window.innerWidth, window.innerHeight);
 renderer.xr.enabled = true;
@@ -845,10 +867,10 @@ async function loadSurface(rs, opt) {                            // -> {made: [m
       g.setIndex(new THREE.BufferAttribute(arr(prim.indices, Uint32Array, 1), 1));
       let mat, textures, baseTex = null;
       if (pr) {                                                  // 0.98.14: the model, colored from the pivot
-        const col = new THREE.Texture(await image(0));
+        const col = await glbTexture(rs, 0, () => image(0));      // 1.0.9: its KTX2 copy with ?ktx2=
         col.flipY = false; col.colorSpace = THREE.NoColorSpace; col.wrapS = THREE.RepeatWrapping; col.generateMipmaps = true;
         col.minFilter = THREE.LinearMipmapLinearFilter; col.anisotropy = Math.min(8, renderer.capabilities.getMaxAnisotropy());
-        col.needsUpdate = true;
+        fixCompressed(col); col.needsUpdate = true;
         const rng = new THREE.Texture(await image(1, { colorSpaceConversion: 'none', premultiplyAlpha: 'none' }));
         rng.flipY = false; rng.colorSpace = THREE.NoColorSpace; rng.wrapS = THREE.RepeatWrapping; rng.generateMipmaps = false;
         rng.minFilter = THREE.NearestFilter; rng.magFilter = THREE.NearestFilter; rng.needsUpdate = true;
@@ -873,7 +895,7 @@ async function loadSurface(rs, opt) {                            // -> {made: [m
         let t = shared.get(key);
         textures = [];
         if (!t) {
-          t = new THREE.Texture(useSkin ? await createImageBitmap(await fetchBlob(skinUrl_)) : await image(src));
+          t = useSkin ? new THREE.Texture(await createImageBitmap(await fetchBlob(skinUrl_))) : await glbTexture(rs, src, () => image(src));   // 1.0.9
           t.flipY = false; t.wrapS = THREE.RepeatWrapping; t.generateMipmaps = true;
           t.colorSpace = rs.triangles != null ? THREE.NoColorSpace : THREE.SRGBColorSpace;
           t.minFilter = THREE.LinearMipmapLinearFilter; t.anisotropy = Math.min(8, renderer.capabilities.getMaxAnisotropy());
@@ -885,7 +907,7 @@ async function loadSurface(rs, opt) {                            // -> {made: [m
           if (rs.triangles != null && me.name === 'rover') {
             t.generateMipmaps = false; t.minFilter = THREE.LinearFilter; t.anisotropy = 1;
           }
-          t.needsUpdate = true;
+          fixCompressed(t); t.needsUpdate = true;
           shared.set(key, t); textures = [t];
         }
         baseTex = useSkin ? null : t;                            // 0.99.41: the file's own texture, for a skin change
@@ -974,7 +996,7 @@ const VIEWER_NAME = 'Rover Photogrammetry Viewer (RPV)';
 // 0.99.36 (Christian, 19 Nov 2026: "please put the rpp-rpv viewer version number on the lower left above the site name,
 // images size, and version on which the site was rendered"): the page's own version (the RPP release that wrote it;
 // tests/test_station_mesh.py keeps it equal to rpp.__version__), above the station's line
-const RPV_VERSION = '1.0.7';
+const RPV_VERSION = '1.0.8';
 // 1.0.6, 22 Nov: the page's own date, shown beside the version - a viewer fix between versions changes only this, so
 // a phone or headset shows whether it has the newest page (a tab left open keeps the page it loaded)
 const RPV_PAGE = '25 Nov 15:45';
@@ -1260,8 +1282,11 @@ function setGain(p, k) {
 // the 3d model"): a whole variant (the full 3D terrain, and the drive on it) loads no panorama - its views are its own
 // texture (standard color) and the normal map
 const isWhole = q => !!(q && q.station_mesh && q.station_mesh.whole);
+const SHOW_DISTANCE = false;
 function views(p, v) {
-  const q = variants(p)[v] || {}, ks = Object.keys(q.views || {}).filter(k => k !== 'enhanced tone');   // 1.0.6, 23 Nov
+  // 1.0.8 (Christian, 26 Nov 2026: "remove the distance map from the viewer for now"): the range views are not listed
+  // (they stay in panos.json and in the upload; SHOW_DISTANCE brings them back)
+  const q = variants(p)[v] || {}, ks = Object.keys(q.views || {}).filter(k => k !== 'enhanced tone' && (SHOW_DISTANCE || !/^(distance|range)/.test(k)));   // 1.0.6, 23 Nov
   if (!isWhole(q)) return ks;
   const sk = (q.station_mesh && q.station_mesh.skins) || {};     // 0.99.41: the color skins of the full 3D texture
   const w = ks.filter(k => k === 'standard' || k === 'raw color' || sk[k] || /^normal/.test(k) || k === 'range log' || k === 'distance map');
